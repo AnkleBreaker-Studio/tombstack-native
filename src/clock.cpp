@@ -44,7 +44,7 @@ std::string format_iso8601_utc_ms(std::int64_t ms_since_epoch) {
     const auto second = static_cast<int>((ms_of_day / 1'000) % 60);
     const auto millis = static_cast<int>(ms_of_day % 1'000);
 
-    char buffer[32] = {};
+    char buffer[64] = {};
     std::snprintf(buffer, sizeof(buffer), "%04lld-%02u-%02uT%02d:%02d:%02d.%03dZ",
                   static_cast<long long>(date.year), date.month, date.day, hour, minute, second,
                   millis);

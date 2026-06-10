@@ -34,7 +34,10 @@ class Transport;
  */
 class Client {
 public:
-    Client() = default;
+    // Both out-of-line (client.cpp): members hold unique_ptr<Transport> with
+    // Transport forward-declared, so the ctor's unwind path and the dtor must
+    // be emitted in a TU that sees the complete type.
+    Client();
     ~Client();
 
     Client(const Client &) = delete;

@@ -18,7 +18,7 @@ namespace tombstone {
  * (`false` means "no log" per the server contract).
  */
 
-/** Schema maxima (src/lib/*-schema.ts in the Tombstone monorepo). */
+/** Schema maxima (the per-endpoint schema files under src/lib in the Tombstone monorepo). */
 namespace limits {
 constexpr std::size_t build_version = 64;
 constexpr std::size_t signature = 128;

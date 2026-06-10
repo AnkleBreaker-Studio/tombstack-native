@@ -64,6 +64,8 @@ std::string trim_trailing_slash(std::string value) {
 
 }  // namespace
 
+Client::Client() = default;
+
 Client::~Client() {
     try {
         stop_heartbeat();
