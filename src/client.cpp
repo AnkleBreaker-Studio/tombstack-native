@@ -261,9 +261,13 @@ void Client::stop_heartbeat() {
 }
 
 tombstone_result Client::set_consent(bool granted) {
-    consent_ = granted;
+    const bool was_granted = consent_.exchange(granted);
     if (granted && initialized_) {
         start_session_tracking();
+    } else if (!granted && was_granted) {
+        // Consent revoked: purge buffered breadcrumbs so the pre-revoke trail can't
+        // attach to a crash captured after consent is re-granted (GDPR scoping).
+        breadcrumbs_.clear();
     }
     return TOMBSTONE_OK;
 }

@@ -2,6 +2,17 @@
 
 All notable changes to the Tombstone Native SDK.
 
+## [0.1.1] - 2026-06-10
+
+### Fixed
+
+- **Breadcrumb purge on consent revoke**: `tombstone_set_consent(0)` now clears the
+  buffered breadcrumb ring on a true→false transition (`Client::set_consent` calls
+  the previously-unused `BreadcrumbRing::clear()`), matching the Unity SDK. A
+  pre-revoke trail can no longer attach to a crash captured after consent is
+  re-granted. Extended `tests/test_breadcrumb_ring.cpp` to cover clear-after-wrap
+  reset and ring reuse.
+
 ## [0.1.0] - 2026-06-10
 
 First public cut: capture-local telemetry client with full wire-protocol

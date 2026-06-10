@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tombstone VERSION 0.1.0 LANGUAGES C CXX)
+project(tombstone VERSION 0.1.1 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)

@@ -54,6 +54,24 @@ TEST_CASE("breadcrumb_ring", "ignores empty messages and supports clear") {
     CHECK(ring.snapshot().empty());
 }
 
+TEST_CASE("breadcrumb_ring", "clear after wrap fully resets and ring stays reusable") {
+    // Mirrors the consent-revoke purge (set_consent(false) -> breadcrumbs_.clear()):
+    // after a wrap, clear must drop everything and leave the ring usable from scratch.
+    BreadcrumbRing ring{3};
+    for (int i = 1; i <= 5; ++i) {
+        ring.add("Info", "msg" + std::to_string(i), "t" + std::to_string(i));
+    }
+    ring.clear();
+    CHECK(ring.snapshot().empty());
+
+    ring.add("Warning", "after-clear-1", "t6");
+    ring.add("Error", "after-clear-2", "t7");
+    const auto crumbs = ring.snapshot();
+    CHECK_EQ(crumbs.size(), std::size_t{2});
+    CHECK_EQ(crumbs[0].message, std::string{"after-clear-1"});  // oldest first, no stale entries
+    CHECK_EQ(crumbs[1].message, std::string{"after-clear-2"});
+}
+
 TEST_CASE("breadcrumb_ring", "default capacity is 64") {
     BreadcrumbRing ring;  // default capacity
     for (int i = 0; i < 100; ++i) {
