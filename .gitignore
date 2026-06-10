@@ -1,0 +1,13 @@
+# Build trees
+build/
+out/
+cmake-build-*/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Example scratch data
+tombstone-demo-data/

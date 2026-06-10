@@ -1,0 +1,156 @@
+#include "payloads.h"
+#include "test_framework.h"
+
+using tombstone::Breadcrumb;
+using tombstone::BugReportPayload;
+using tombstone::build_bug_report_json;
+using tombstone::build_crash_json;
+using tombstone::build_event_json;
+using tombstone::build_heartbeat_json;
+using tombstone::CrashPayload;
+using tombstone::EventPayload;
+using tombstone::HeartbeatPayload;
+
+TEST_CASE("payloads", "crash with every field is byte exact") {
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.2.3";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.signature = "deadbeef";
+    payload.stack_hint = "NullReference in Boot";
+    payload.stack_trace = "frame1\nframe2";
+    payload.breadcrumbs = {Breadcrumb{"2026-01-02T03:04:00.000Z", "Info", "loaded level 3"}};
+    payload.user_id = "user-1";
+    payload.steam_id = "7656119";
+    payload.log = true;
+    CHECK_EQ(build_crash_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.2.3","os":"windows","arch":"x64",)"
+                         R"("signature":"deadbeef","stackHint":"NullReference in Boot",)"
+                         R"("stackTrace":"frame1\nframe2",)"
+                         R"("breadcrumbs":[{"tsIso":"2026-01-02T03:04:00.000Z",)"
+                         R"("level":"Info","message":"loaded level 3"}],)"
+                         R"("userId":"user-1","steamId":"7656119","log":true})"});
+}
+
+TEST_CASE("payloads", "minimal crash omits optionals but always carries log") {
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.2.3";
+    payload.os = "linux";
+    payload.arch = "arm64";
+    payload.signature = "unclean-shutdown";
+    payload.stack_hint = "hint";
+    payload.log = false;  // "no log" is explicit, never an absent field
+    CHECK_EQ(build_crash_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.2.3","os":"linux","arch":"arm64",)"
+                         R"("signature":"unclean-shutdown","stackHint":"hint","log":false})"});
+}
+
+TEST_CASE("payloads", "crash clamps oversized strings to the schema maxima") {
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.signature = std::string(200, 's');
+    payload.stack_hint = std::string(600, 'h');
+    payload.stack_trace = std::string(9000, 't');
+    const std::string json = build_crash_json(payload);
+    CHECK(json.find('"' + std::string(128, 's') + '"') != std::string::npos);
+    CHECK(json.find(std::string(129, 's')) == std::string::npos);
+    CHECK(json.find('"' + std::string(512, 'h') + '"') != std::string::npos);
+    CHECK(json.find(std::string(513, 'h')) == std::string::npos);
+    CHECK(json.find(std::string(8193, 't')) == std::string::npos);
+}
+
+TEST_CASE("payloads", "bug report is byte exact and omits empty category") {
+    BugReportPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "2.0.0";
+    payload.os = "macos";
+    payload.arch = "arm64";
+    payload.message = "button does nothing";
+    payload.log = true;
+    CHECK_EQ(build_bug_report_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"2.0.0","os":"macos","arch":"arm64",)"
+                         R"("message":"button does nothing","log":true})"});
+
+    payload.category = "ui";
+    payload.user_id = "u9";
+    CHECK_EQ(build_bug_report_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"2.0.0","os":"macos","arch":"arm64",)"
+                         R"("category":"ui","message":"button does nothing",)"
+                         R"("userId":"u9","log":true})"});
+}
+
+TEST_CASE("payloads", "event serializes attributes in insertion order") {
+    EventPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.name = "level_complete";
+    payload.user_id = "u1";
+    payload.attributes = {{"level", "3"}, {"boss", "true"}};
+    CHECK_EQ(build_event_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                         R"("name":"level_complete","userId":"u1",)"
+                         R"("attributes":{"level":"3","boss":"true"}})"});
+}
+
+TEST_CASE("payloads", "event omits userId and attributes when absent") {
+    EventPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "other";
+    payload.arch = "other";
+    payload.name = "boot";
+    const std::string json = build_event_json(payload);
+    CHECK_EQ(json, std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                               R"("buildVersion":"1.0.0","os":"other","arch":"other",)"
+                               R"("name":"boot"})"});
+    // Absent optionals are OMITTED — never serialized as "".
+    CHECK(json.find("\"level\"") == std::string::npos);
+    CHECK(json.find("\"\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "event caps attributes at 32 entries") {
+    EventPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.name = "spam";
+    for (int i = 0; i < 40; ++i) {
+        payload.attributes.emplace_back("k" + std::to_string(i), "v");
+    }
+    const std::string json = build_event_json(payload);
+    CHECK(json.find("\"k31\"") != std::string::npos);
+    CHECK(json.find("\"k32\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "heartbeat is byte exact with and without userId") {
+    HeartbeatPayload payload;
+    payload.session_id = "a1b2c3d4";
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x86";
+    CHECK_EQ(build_heartbeat_json(payload),
+             std::string{R"({"sessionId":"a1b2c3d4",)"
+                         R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x86"})"});
+
+    payload.user_id = "player-7";
+    CHECK_EQ(build_heartbeat_json(payload),
+             std::string{R"({"sessionId":"a1b2c3d4",)"
+                         R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x86",)"
+                         R"("userId":"player-7"})"});
+}

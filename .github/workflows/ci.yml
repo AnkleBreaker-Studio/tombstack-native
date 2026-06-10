@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libcurl (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Configure
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DTOMBSTONE_BUILD_EXAMPLES=ON
+          -DTOMBSTONE_BUILD_TESTS=ON
+          -DTOMBSTONE_BUILD_STATIC=ON
+
+      - name: Build (shared lib + static + examples + tests)
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Run sidecar demo (offline path)
+        if: runner.os != 'Windows'
+        run: ./build/tombstone_crash_sidecar_demo
+
+      - name: Run sidecar demo (offline path, Windows)
+        if: runner.os == 'Windows'
+        run: .\build\Release\tombstone_crash_sidecar_demo.exe
