@@ -99,6 +99,9 @@ typedef struct tombstone_options {
     int enable_unclean_shutdown_detection;
     /** Nonzero (default) = capture starts immediately. 0 = wait for tombstone_set_consent(1). */
     int consent_granted;
+    /** Nonzero (default) = emit a `tombstone.rtt_ms` metric after each successful ingest
+     *  POST (the upload round-trip time). 0 disables this self-telemetry. */
+    int enable_rtt_metric;
     /** Optional diagnostics sink (see tombstone_log_callback). NULL = silent. */
     tombstone_log_callback log_callback;
     /** Opaque pointer handed back to log_callback. */
@@ -255,6 +258,52 @@ TOMBSTONE_API void tombstone_on_anomalous_disconnect(tombstone_handle *h, const 
  * when work remains. timeout_ms <= 0 means "do not wait, just report".
  */
 TOMBSTONE_API tombstone_result tombstone_flush(int timeout_ms);
+
+/**
+ * Set a per-name keep-rate (sampling) for events and metrics. `rate` is clamped to
+ * [0,1]: 1 keeps everything (the default for any unset name), 0 drops everything, and
+ * a value in between keeps that fraction at random. Below-rate samples are dropped
+ * BEFORE buffering, so a chatty stream costs nothing once sampled out. The rate table
+ * is bounded; `name` is required. `h` is the reserved opaque handle; pass NULL.
+ * Fail-soft: a no-op before init or on a NULL/empty name.
+ */
+TOMBSTONE_API void tombstone_set_sample_rate(tombstone_handle *h, const char *name, double rate);
+
+/**
+ * Record the current level / scene name as context: adds an info breadcrumb
+ * ("[scene] level: <name>") to the crash trail and stores `level_name` as the current
+ * level context. `name` is clamped to the breadcrumb message limit. `h` is the reserved
+ * opaque handle; pass NULL. Fail-soft: a no-op before init, while consent is off, or on
+ * a NULL/empty name.
+ */
+TOMBSTONE_API void tombstone_set_level(tombstone_handle *h, const char *level_name);
+
+/**
+ * Point-in-time snapshot of SDK state for support overlays / dev HUDs (K3). Fill a
+ * caller-owned struct; allocates nothing and never throws. `last_flush_age_seconds` is
+ * -1.0 when no event/metric batch has flushed yet this launch. Returns
+ * TOMBSTONE_ERROR_INVALID_ARGUMENT for a NULL `out` and TOMBSTONE_ERROR_NOT_INITIALIZED
+ * before init (with `out` zeroed). `h` is the reserved opaque handle; pass NULL.
+ */
+typedef struct tombstone_diagnostics_t {
+    /** Nonzero once tombstone_init has completed. */
+    int initialized;
+    /** Current telemetry consent state (nonzero = granted). */
+    int consent_granted;
+    /** Payloads waiting in the in-memory outbound queue. */
+    int queued_outbound;
+    /** Write-ahead payloads persisted to the offline sidecar directory. */
+    int persisted_sidecar;
+    /** Seconds since the last event/metric batch flush, or -1.0 when none yet this launch. */
+    double last_flush_age_seconds;
+    /** Nonzero when a match id is currently set. */
+    int has_match_id;
+    /** Nonzero when a server id is currently set. */
+    int has_server_id;
+} tombstone_diagnostics_t;
+
+TOMBSTONE_API tombstone_result tombstone_diagnostics(tombstone_handle *h,
+                                                     tombstone_diagnostics_t *out);
 
 /** SDK semantic version string, e.g. "0.1.0". Never NULL. */
 TOMBSTONE_API const char *tombstone_version(void);

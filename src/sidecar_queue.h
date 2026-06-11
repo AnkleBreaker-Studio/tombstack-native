@@ -58,6 +58,9 @@ public:
     /** All pending sidecars across the three kinds (offline drain at init). */
     std::vector<SidecarRecord> scan();
 
+    /** Count of pending sidecar files across the three kinds (diagnostics, K3). */
+    std::size_t pending_count();
+
 private:
     std::filesystem::path kind_dir(SidecarKind kind) const;
     std::size_t count_files(const std::filesystem::path &dir) const;

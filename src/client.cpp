@@ -110,6 +110,7 @@ tombstone_result Client::init(const tombstone_options &options) {
     heartbeats_enabled_ = options.enable_heartbeats != 0;
     session_log_enabled_ = options.enable_session_log != 0;
     unclean_detection_enabled_ = options.enable_unclean_shutdown_detection != 0;
+    rtt_metric_enabled_ = options.enable_rtt_metric != 0;
     consent_ = options.consent_granted != 0;
 
     const int interval = options.heartbeat_interval_s > 0 ? options.heartbeat_interval_s
@@ -126,6 +127,9 @@ tombstone_result Client::init(const tombstone_options &options) {
     worker_ = std::make_unique<Worker>(*transport_, sidecars_, session_log_, sdk_log_, token_);
     worker_->set_batch_drainer([this] { drain_ready_batches(); });
     worker_->set_ack_handler([this](const std::string &body) { handle_heartbeat_ack(body); });
+    if (rtt_metric_enabled_) {
+        worker_->set_rtt_handler([this](double ms) { record_rtt_metric(ms); });
+    }
     worker_->start();
 
     initialized_ = true;
@@ -389,7 +393,8 @@ tombstone_result Client::flush(int timeout_ms) {
 }
 
 void Client::maybe_flush_batch(Batch &batch, const char *path,
-                               std::chrono::steady_clock::time_point now, bool force) {
+                               std::chrono::steady_clock::time_point now, bool force,
+                               bool suppress_rtt) {
     if (!batch.has_items()) {
         return;  // cheap short-circuit: an empty idle loop allocates nothing (section 15)
     }
@@ -403,19 +408,23 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
     job.durability = Durability::persist_on_failure;  // retried with backoff in-session
     job.no_persist = true;  // a batch envelope is not a single-item sidecar
     job.sign_body = true;  // events:batch / metrics:batch are ingest POSTs — sign them (S3)
+    job.suppress_rtt = suppress_rtt;  // the metrics batch's own upload must not emit an rtt metric
+    // Record the flush time for diagnostics (K3); steady-clock ns, 0 means "never".
+    last_flush_steady_ns_.store(
+        std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
     worker_->enqueue(std::move(job));
 }
 
 void Client::drain_ready_batches() {
     const auto now = std::chrono::steady_clock::now();
-    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/false);
-    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/false);
+    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/false, /*suppress_rtt=*/false);
+    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/false, /*suppress_rtt=*/true);
 }
 
 void Client::flush_all_batches() {
     const auto now = std::chrono::steady_clock::now();
-    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/true);
-    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/true);
+    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/true, /*suppress_rtt=*/false);
+    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/true, /*suppress_rtt=*/true);
 }
 
 }  // namespace tombstone

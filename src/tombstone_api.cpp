@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr const char *sdk_version = "0.4.1";
+constexpr const char *sdk_version = "0.5.0";
 
 // The process-wide client. Entry points snapshot the shared_ptr under the
 // mutex and call outside it, so a long flush() neither blocks other calls nor
@@ -51,6 +51,7 @@ tombstone_result tombstone_options_init(tombstone_options *options) {
     options->enable_session_log = 1;
     options->enable_unclean_shutdown_detection = 1;
     options->consent_granted = 1;
+    options->enable_rtt_metric = 1;
     options->log_callback = nullptr;
     options->log_callback_user_data = nullptr;
     return TOMBSTONE_OK;
@@ -176,6 +177,27 @@ void tombstone_on_anomalous_disconnect(tombstone_handle * /*handle*/, const char
             (reason != nullptr && reason[0] != '\0') ? reason : "anomalous disconnect";
         return client.request_player_logs("userId", user_id, effective_reason);
     });
+}
+
+void tombstone_set_sample_rate(tombstone_handle * /*handle*/, const char *name, double rate) {
+    (void)with_client([&](tombstone::Client &client) {
+        client.set_sample_rate(name, rate);
+        return TOMBSTONE_OK;
+    });
+}
+
+void tombstone_set_level(tombstone_handle * /*handle*/, const char *level_name) {
+    (void)with_client([&](tombstone::Client &client) { return client.set_level(level_name); });
+}
+
+tombstone_result tombstone_diagnostics(tombstone_handle * /*handle*/,
+                                       tombstone_diagnostics_t *out) {
+    if (out == nullptr) {
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+    }
+    *out = tombstone_diagnostics_t{};   // zero the snapshot first (also covers the not-init path)
+    out->last_flush_age_seconds = -1.0;  // "no flush yet" sentinel
+    return with_client([&](tombstone::Client &client) { return client.diagnostics(out); });
 }
 
 tombstone_result tombstone_flush(int timeout_ms) {

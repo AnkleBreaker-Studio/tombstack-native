@@ -116,6 +116,9 @@ tombstone_result Client::track_event(const char *name, const char *const *keys,
     if (!capture_allowed()) {
         return TOMBSTONE_DISABLED;
     }
+    if (!sampler_.should_keep(name)) {
+        return TOMBSTONE_OK;  // sampled out before buffering (K1)
+    }
     EventPayload payload;
     payload.occurred_at_iso = now_iso8601_utc_ms();
     payload.build_version = build_version_;
@@ -154,6 +157,9 @@ tombstone_result Client::track_metric(const char *name, double value, const char
     }
     if (!capture_allowed()) {
         return TOMBSTONE_DISABLED;
+    }
+    if (!sampler_.should_keep(name)) {
+        return TOMBSTONE_OK;  // sampled out before buffering (K1)
     }
     MetricPayload payload;
     payload.name = name;
@@ -252,6 +258,59 @@ tombstone_result Client::request_player_logs(const char *target_type, const char
     job.durability = Durability::persist_on_failure;  // retried in-session with backoff
     job.no_persist = true;  // a control-plane POST is not a single-item ingest sidecar
     worker_->enqueue(std::move(job));
+    return TOMBSTONE_OK;
+}
+
+void Client::record_rtt_metric(double ms) {
+    // K1: fold the upload round-trip into the metric stream. Reuses track_metric so it
+    // shares the batch + correlation path; the metrics:batch upload that carries this
+    // sample is flagged suppress_rtt, so a measurement can never recurse into itself.
+    (void)track_metric("tombstone.rtt_ms", ms, "ms");
+}
+
+void Client::set_sample_rate(const char *name, double rate) {
+    if (name == nullptr || name[0] == '\0') {
+        return;  // fail-soft: a name is required
+    }
+    sampler_.set_rate(name, rate);
+}
+
+tombstone_result Client::set_level(const char *level_name) {
+    if (level_name == nullptr || level_name[0] == '\0') {
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+    }
+    if (!capture_allowed()) {
+        return TOMBSTONE_DISABLED;
+    }
+    const std::string level = clamped(level_name, BreadcrumbRing::max_message_bytes);
+    {
+        // Store the current level as context (mutex-shared with the correlation context).
+        const std::lock_guard<std::mutex> lock(match_mutex_);
+        current_level_ = level;
+    }
+    // Info breadcrumb with the category folded into the message — the wire breadcrumb
+    // schema is {tsIso, level, message}, so "scene" rides as a "[scene] " prefix
+    // (mirrors the Unity SDK's AddBreadcrumb category convention).
+    record_breadcrumb("Info", "[scene] level: " + level);
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::diagnostics(tombstone_diagnostics_t *out) {
+    // `out` is pre-zeroed by the C entry point; fill the live snapshot. No throw.
+    out->initialized = initialized_ ? 1 : 0;
+    out->consent_granted = consent_ ? 1 : 0;
+    out->queued_outbound = worker_ ? static_cast<int>(worker_->queued_count()) : 0;
+    out->persisted_sidecar = static_cast<int>(sidecars_.pending_count());
+    const long long flushed = last_flush_steady_ns_.load(std::memory_order_relaxed);
+    if (flushed != 0) {
+        const long long now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+        out->last_flush_age_seconds = static_cast<double>(now_ns - flushed) / 1e9;
+    } else {
+        out->last_flush_age_seconds = -1.0;
+    }
+    const MatchContext ctx = current_match_context();
+    out->has_match_id = ctx.match_id.empty() ? 0 : 1;
+    out->has_server_id = ctx.server_id.empty() ? 0 : 1;
     return TOMBSTONE_OK;
 }
 

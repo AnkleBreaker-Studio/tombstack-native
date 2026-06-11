@@ -2,6 +2,34 @@
 
 All notable changes to the Tombstone Native SDK.
 
+## [0.5.0] - 2026-06-11
+
+### Added
+
+- **S1 — fulfilment nonce round-trip** — the heartbeat ack's `pendingRequests` now carry a
+  single-use `fulfillNonce` + `nonceExpiry` per request; the SDK parses both
+  (`find_int_field`, extended `find_pending_requests`) and echoes them verbatim on the
+  `/pull-requests/{id}/fulfill` body alongside `sessionId`, so the server can re-derive
+  `base64url(HMAC(secret, gameId:requestId:sessionId:nonceExpiry))` and authenticate the
+  honouring client. Fail-soft: an older server that mints no nonce gets the pre-S1 body.
+- **S3 — signed ingest POSTs** — every ingest POST (crashes / bug-reports / events /
+  heartbeats / events:batch / metrics:batch) now carries
+  `X-Tombstone-Signature: t=<unixSec>,v1=<hex>`, an HMAC-SHA256 over `"<t>.<rawBody>"`
+  keyed by the per-game ingest token, computed at send time on the worker thread. Pull /
+  fulfill / editor requests are never signed. Signing is fail-soft (sends unsigned on any
+  error). New `hmac_sha256_hex` (RFC 2104 over the existing local SHA-256, validated
+  against the RFC 4231 vectors); no third-party crypto vendored.
+- **K1 — round-trip metric + per-name sampling** — after each successful ingest POST the
+  SDK emits a `tombstone.rtt_ms` metric (config flag `enable_rtt_metric`, default on; the
+  metrics batch's own upload is exempt so it cannot recurse). New
+  `tombstone_set_sample_rate(handle, name, rate)` installs a per-name keep-rate (bounded,
+  mutex-guarded) that drops events/metrics below the rate before buffering.
+- **K2 — level/scene context** — `tombstone_set_level(handle, level_name)` adds an info
+  breadcrumb `"[scene] level: <name>"` and stores the name as the current level context.
+- **K3 — diagnostics snapshot** — `tombstone_diagnostics(handle, out)` fills a C struct
+  (`tombstone_diagnostics_t`): initialized, consent, queued outbound, persisted sidecars,
+  last-flush age (seconds; -1 when none), and match/server id presence. Clean C ABI, no throw.
+
 ## [0.4.1] - 2026-06-11
 
 ### Fixed

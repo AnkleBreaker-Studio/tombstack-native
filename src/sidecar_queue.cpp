@@ -119,6 +119,19 @@ void SidecarQueue::remove(const fs::path &path) noexcept {
     }
 }
 
+std::size_t SidecarQueue::pending_count() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!configured_) {
+        return 0;
+    }
+    std::size_t total = 0;
+    for (const SidecarKind kind :
+         {SidecarKind::crash, SidecarKind::bug_report, SidecarKind::event}) {
+        total += count_files(kind_dir(kind));
+    }
+    return total;
+}
+
 std::vector<SidecarRecord> SidecarQueue::scan() {
     const std::lock_guard<std::mutex> lock(mutex_);
     std::vector<SidecarRecord> out;

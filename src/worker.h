@@ -44,6 +44,7 @@ struct UploadJob {
     bool no_persist{false};              // batch envelopes: retry in-session, never sidecar'd
     bool parse_ack{false};               // heartbeat: hand the 2xx body to the ack handler
     bool sign_body{false};               // ingest POST: attach the X-Tombstone-Signature header (S3)
+    bool suppress_rtt{false};            // metrics:batch: do NOT emit an rtt metric (would recurse)
     int attempt{0};
     std::chrono::steady_clock::time_point not_before{};
 };
@@ -97,11 +98,20 @@ public:
      *  start() (single-threaded init); the worker owns no pull-request semantics. */
     void set_ack_handler(std::function<void(const std::string &)> handler);
 
+    /** Install the round-trip-time handler (K1), invoked off the caller's thread
+     *  with the measured milliseconds of each successful ingest POST (except the
+     *  metrics batch, which would recurse). The client records it as the
+     *  `tombstone.rtt_ms` metric. Must be set before start() (single-threaded init). */
+    void set_rtt_handler(std::function<void(double)> handler);
+
     /** Nudge the worker to run the batch drainer now (count trigger). */
     void wake();
 
     /** True when the queue drained (and nothing is in flight) within the timeout. */
     bool flush(std::chrono::milliseconds timeout);
+
+    /** Number of jobs waiting in the outbound queue (diagnostics, K3). Thread-safe. */
+    std::size_t queued_count() const;
 
 private:
     void run();
@@ -129,6 +139,7 @@ private:
     std::atomic<bool> wake_requested_{false};
     std::function<void()> batch_drainer_;  // set before start(); read on the worker thread
     std::function<void(const std::string &)> ack_handler_;  // set before start(); worker thread
+    std::function<void(double)> rtt_handler_;  // set before start(); worker thread (K1)
     std::chrono::steady_clock::time_point next_log_flush_{};
     std::thread thread_;
 };

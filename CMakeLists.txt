@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tombstone VERSION 0.4.1 LANGUAGES C CXX)
+project(tombstone VERSION 0.5.0 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
@@ -74,6 +74,7 @@ set(TOMBSTONE_CORE_SOURCES
   src/json_writer.cpp
   src/payloads.cpp
   src/platform.cpp
+  src/sampler.cpp
   src/sdk_log.cpp
   src/session_log.cpp
   src/session_marker.cpp
@@ -158,6 +159,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_json_scan.cpp
     tests/test_json_writer.cpp
     tests/test_payloads.cpp
+    tests/test_sampler.cpp
     tests/test_session_log.cpp
     tests/test_session_marker.cpp
     tests/test_sidecar.cpp
@@ -173,7 +175,7 @@ if(TOMBSTONE_BUILD_TESTS)
 
   foreach(suite
       batch breadcrumb_ring clock dedupe json_scan json_writer
-      payloads session_log session_marker sidecar signature)
+      payloads sampler session_log session_marker sidecar signature)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()
 endif()

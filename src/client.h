@@ -6,6 +6,7 @@
 #include "batch.h"
 #include "breadcrumb_ring.h"
 #include "dedupe.h"
+#include "sampler.h"
 #include "sdk_log.h"
 #include "session_log.h"
 #include "session_marker.h"
@@ -63,6 +64,9 @@ public:
     tombstone_result log_line(tombstone_level level, const char *line);
     tombstone_result request_player_logs(const char *target_type, const char *target_value,
                                          const char *reason);
+    void set_sample_rate(const char *name, double rate);
+    tombstone_result set_level(const char *level_name);
+    tombstone_result diagnostics(tombstone_diagnostics_t *out);
     tombstone_result flush(int timeout_ms);
 
 private:
@@ -82,11 +86,15 @@ private:
     void record_breadcrumb(std::string_view level, std::string_view message);
     void enqueue_ingest(const char *path, std::string body, Durability durability,
                         SidecarKind kind, bool request_log, bool log_from_previous);
+    /** Worker-thread hook (K1): record the upload round-trip as `tombstone.rtt_ms`. */
+    void record_rtt_metric(double ms);
 
     // --- batching (client.cpp): event/metric envelopes, sent off the worker thread ---
-    /** Drain one batch into the queue when a trigger fires (or `force`). */
+    /** Drain one batch into the queue when a trigger fires (or `force`). `suppress_rtt`
+     *  marks the metrics batch so its own upload does not emit a recursive rtt metric. */
     void maybe_flush_batch(Batch &batch, const char *path,
-                           std::chrono::steady_clock::time_point now, bool force);
+                           std::chrono::steady_clock::time_point now, bool force,
+                           bool suppress_rtt);
     /** Worker-thread hook: flush count/age-ready event + metric batches. */
     void drain_ready_batches();
     /** Force-drain both batches (explicit flush / quit / pre-crash). */
@@ -110,6 +118,7 @@ private:
     SidecarQueue sidecars_{sdk_log_};
     BreadcrumbRing breadcrumbs_;
     DedupeWindow dedupe_;
+    Sampler sampler_;
 
     // Bounded, drop-oldest batch buffers (declared before worker_ so they
     // outlive the worker thread that drains them; spec section 16).
@@ -132,7 +141,11 @@ private:
     bool heartbeats_enabled_{true};
     bool session_log_enabled_{true};
     bool unclean_detection_enabled_{true};
+    bool rtt_metric_enabled_{true};
     bool storage_available_{false};
+
+    // K1 diagnostics: steady-clock ns of the last event/metric batch flush (0 = none).
+    std::atomic<long long> last_flush_steady_ns_{0};
 
     // state
     std::atomic<bool> initialized_{false};
@@ -152,6 +165,9 @@ private:
     std::string role_;
     std::string server_id_;
     std::string match_id_;
+
+    // current level / scene context (K2), stored alongside the correlation context
+    std::string current_level_;
 
     // heartbeat timer thread
     std::thread heartbeat_thread_;

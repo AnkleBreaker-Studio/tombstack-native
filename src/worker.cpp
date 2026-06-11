@@ -72,6 +72,10 @@ void Worker::set_ack_handler(std::function<void(const std::string &)> handler) {
     ack_handler_ = std::move(handler);  // set before start(); no concurrent access yet
 }
 
+void Worker::set_rtt_handler(std::function<void(double)> handler) {
+    rtt_handler_ = std::move(handler);  // set before start(); no concurrent access yet
+}
+
 void Worker::wake() {
     wake_requested_.store(true);
     cv_.notify_all();
@@ -94,6 +98,11 @@ bool Worker::flush(std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     return cv_.wait_until(lock, deadline,
                           [this] { return queue_.empty() && !in_flight_; });
+}
+
+std::size_t Worker::queued_count() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return queue_.size();
 }
 
 void Worker::run() {
@@ -193,9 +202,22 @@ void Worker::process(UploadJob &job) {
             }
             return;
         }
+        const auto sent_at = std::chrono::steady_clock::now();
         const HttpResponse response =
             transport_.post_json(job.url, token_, job.body, request_timeout_seconds, job.sign_body);
+        const auto round_trip = std::chrono::steady_clock::now() - sent_at;
+        // K1: decide whether to emit the round-trip metric BEFORE handle_post_result,
+        // which may move the job into the retry queue. Only successful ingest POSTs
+        // count; suppress_rtt exempts the metrics batch so an rtt sample cannot recurse
+        // into an endless batch->rtt->batch loop.
+        const bool emit_rtt = rtt_handler_ && job.sign_body && !job.suppress_rtt &&
+                              classify(response.transport_error, response.status) ==
+                                  Outcome::delivered;
         handle_post_result(job, response.transport_error, response.status, response.body);
+        if (emit_rtt) {
+            const double ms = std::chrono::duration<double, std::milli>(round_trip).count();
+            rtt_handler_(ms);
+        }
     } catch (const std::exception &e) {
         sdk_log_.warn(std::string{"upload bookkeeping failed: "} + e.what());
     } catch (...) {
