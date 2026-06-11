@@ -44,6 +44,17 @@ void common_context(JsonWriter &json, const std::string &occurred_at_iso,
     json.string_field("arch", arch);
 }
 
+/** Multiplayer correlation spine (role/serverId/matchId/sessionId). Each is an
+ *  optional dimension: omitted when empty (never an empty-string enum), so a
+ *  plain client body is byte-identical to the pre-correlation wire shape. */
+void correlation_fields(JsonWriter &json, const std::string &role, const std::string &server_id,
+                        const std::string &match_id, const std::string &session_id) {
+    optional_field(json, "role", role, limits::role);
+    optional_field(json, "serverId", server_id, limits::server_id);
+    optional_field(json, "matchId", match_id, limits::match_id);
+    optional_field(json, "sessionId", session_id, limits::session_id);
+}
+
 }  // namespace
 
 std::string build_crash_json(const CrashPayload &payload) {
@@ -57,6 +68,7 @@ std::string build_crash_json(const CrashPayload &payload) {
     optional_field(json, "userId", payload.user_id, limits::user_id);
     optional_field(json, "steamId", payload.steam_id, limits::steam_id);
     json.bool_field("log", payload.log);
+    correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
     json.end_object();
     return json.str();
 }
@@ -71,6 +83,7 @@ std::string build_bug_report_json(const BugReportPayload &payload) {
     optional_field(json, "steamId", payload.steam_id, limits::steam_id);
     breadcrumbs_field(json, payload.breadcrumbs);
     json.bool_field("log", payload.log);
+    correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
     json.end_object();
     return json.str();
 }
@@ -97,6 +110,7 @@ std::string build_event_json(const EventPayload &payload) {
         }
         json.end_object();
     }
+    correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
     json.end_object();
     return json.str();
 }

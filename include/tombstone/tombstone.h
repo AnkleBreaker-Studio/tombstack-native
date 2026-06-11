@@ -136,6 +136,36 @@ TOMBSTONE_API tombstone_result tombstone_set_user(const char *user_id, const cha
 TOMBSTONE_API tombstone_result tombstone_set_consent(int granted);
 
 /**
+ * Tag subsequent telemetry with multiplayer correlation context. `server_id`
+ * and `match_id` are stamped (clamped to 128 chars) onto every crash, bug, and
+ * event body so server<->match<->session linking is exact. Pass NULL to clear
+ * either. Empty/cleared dimensions are omitted from the wire body.
+ *
+ * `h` is the reserved opaque handle (the v0 API drives the process-wide
+ * instance); pass NULL. Fail-soft: a no-op before init.
+ */
+TOMBSTONE_API void tombstone_set_match_context(tombstone_handle *h, const char *server_id,
+                                               const char *match_id);
+
+/**
+ * Begin a server-authoritative match: marks role="server", mints a fresh match
+ * id, and stamps it on subsequent telemetry until tombstone_end_match(). The
+ * 32-char id (plus NUL) is written to `out_match_id`; `out_cap` must be >= 33.
+ * Returns TOMBSTONE_ERROR_INVALID_ARGUMENT for a NULL/too-small buffer (the
+ * cached context is left unchanged) and TOMBSTONE_ERROR_NOT_INITIALIZED before
+ * init. `h` is the reserved opaque handle; pass NULL.
+ */
+TOMBSTONE_API tombstone_result tombstone_start_match(tombstone_handle *h, char *out_match_id,
+                                                     size_t out_cap);
+
+/**
+ * End the current match: clears the cached match id so subsequent telemetry is
+ * no longer match-tagged (role and server id are retained). `h` is the reserved
+ * opaque handle; pass NULL. Fail-soft: a no-op before init.
+ */
+TOMBSTONE_API void tombstone_end_match(tombstone_handle *h);
+
+/**
  * Add a breadcrumb to the trail attached to future crash and bug reports.
  * Fixed 64-slot ring; oldest entries are overwritten. Message clamped to 512.
  */

@@ -2,6 +2,29 @@
 
 All notable changes to the Tombstone Native SDK.
 
+## [0.2.0] - 2026-06-11
+
+### Added
+
+- **Multiplayer correlation context**: three new C ABI calls —
+  `tombstone_set_match_context(handle, server_id, match_id)`,
+  `tombstone_start_match(handle, out_match_id, out_cap)` (mints a 32-char match
+  id, marks `role="server"`), and `tombstone_end_match(handle)` (clears the
+  cached match id; role + server id are retained). The cached context is
+  mutex-guarded like the rest of `Client` state and never throws across the ABI.
+- **Correlation stamping on the wire**: crash, bug-report, and event bodies now
+  carry the optional `role` / `serverId` / `matchId` / `sessionId` dimensions
+  (keys identical to the server Zod schema and the Unity SDK). Empty dimensions
+  are omitted per the existing optional-omission rule (never an empty-string
+  enum), so a plain client body is byte-identical to the 0.1.x wire shape.
+  `sessionId` is stamped from the live session id, making
+  server<->match<->session linking exact. Byte-exact builder tests added in
+  `tests/test_payloads.cpp`.
+
+### Fixed
+
+- `tombstone_version()` now reports the real SDK version (was pinned to "0.1.0").
+
 ## [0.1.1] - 2026-06-10
 
 ### Fixed

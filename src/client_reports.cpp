@@ -121,6 +121,11 @@ tombstone_result Client::track_event(const char *name, const char *const *keys,
     payload.arch = arch_;
     payload.name = name;
     payload.user_id = current_user_id();
+    const MatchContext event_ctx = current_match_context();
+    payload.role = event_ctx.role;
+    payload.server_id = event_ctx.server_id;
+    payload.match_id = event_ctx.match_id;
+    payload.session_id = session_id_;
     payload.attributes.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
         if (keys[i] == nullptr || keys[i][0] == '\0') {
@@ -173,6 +178,11 @@ tombstone_result Client::report_crash(const char *signature, const char *stack_h
     payload.user_id = current_user_id();
     payload.steam_id = current_steam_id();
     payload.log = want_log;
+    const MatchContext crash_ctx = current_match_context();
+    payload.role = crash_ctx.role;
+    payload.server_id = crash_ctx.server_id;
+    payload.match_id = crash_ctx.match_id;
+    payload.session_id = session_id_;
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
                    SidecarKind::crash, want_log, /*log_from_previous=*/false);
     // Final flush in the crash path: the on-disk log must include this crash
@@ -204,6 +214,11 @@ tombstone_result Client::report_bug(const char *category, const char *message, b
     payload.steam_id = current_steam_id();
     payload.breadcrumbs = breadcrumbs_.snapshot();
     payload.log = want_log;
+    const MatchContext bug_ctx = current_match_context();
+    payload.role = bug_ctx.role;
+    payload.server_id = bug_ctx.server_id;
+    payload.match_id = bug_ctx.match_id;
+    payload.session_id = session_id_;
     enqueue_ingest(bug_reports_path, build_bug_report_json(payload), Durability::write_ahead,
                    SidecarKind::bug_report, want_log, /*log_from_previous=*/false);
     return TOMBSTONE_OK;

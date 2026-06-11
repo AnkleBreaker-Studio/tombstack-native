@@ -2,6 +2,7 @@
 
 #include "clock.h"
 #include "json_scan.h"
+#include "json_writer.h"
 #include "payloads.h"
 #include "platform.h"
 #include "transport.h"
@@ -270,6 +271,46 @@ tombstone_result Client::set_consent(bool granted) {
         breadcrumbs_.clear();
     }
     return TOMBSTONE_OK;
+}
+
+tombstone_result Client::set_match_context(const char *server_id, const char *match_id) {
+    const std::lock_guard<std::mutex> lock(match_mutex_);
+    server_id_ = (server_id != nullptr)
+                     ? std::string{utf8_safe_truncate(server_id, limits::server_id)}
+                     : std::string{};
+    match_id_ = (match_id != nullptr)
+                    ? std::string{utf8_safe_truncate(match_id, limits::match_id)}
+                    : std::string{};
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::start_match(char *out_match_id, std::size_t out_cap) {
+    if (out_match_id == nullptr || out_cap == 0) {
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+    }
+    const std::string id = random_session_id();  // 32 hex chars, same generator as session ids
+    if (out_cap < id.size() + 1) {
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;  // buffer too small: cached context unchanged
+    }
+    {
+        const std::lock_guard<std::mutex> lock(match_mutex_);
+        role_ = "server";
+        match_id_ = id;
+    }
+    id.copy(out_match_id, id.size());
+    out_match_id[id.size()] = '\0';
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::end_match() {
+    const std::lock_guard<std::mutex> lock(match_mutex_);
+    match_id_.clear();  // role + server id are retained across matches
+    return TOMBSTONE_OK;
+}
+
+Client::MatchContext Client::current_match_context() const {
+    const std::lock_guard<std::mutex> lock(match_mutex_);
+    return MatchContext{role_, server_id_, match_id_};
 }
 
 tombstone_result Client::flush(int timeout_ms) {

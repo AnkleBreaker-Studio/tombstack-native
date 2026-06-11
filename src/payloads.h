@@ -33,6 +33,9 @@ constexpr std::size_t event_attributes = 32;
 constexpr std::size_t event_attribute_key = 64;
 constexpr std::size_t event_attribute_value = 512;
 constexpr std::size_t session_id = 64;
+constexpr std::size_t role = 16;       // enum "client"/"server"; never emitted empty
+constexpr std::size_t server_id = 128;
+constexpr std::size_t match_id = 128;
 }  // namespace limits
 
 struct CrashPayload {
@@ -47,6 +50,10 @@ struct CrashPayload {
     std::string user_id;                 // empty -> omitted
     std::string steam_id;                // empty -> omitted
     bool log{false};                     // always serialized
+    std::string role;                    // "client"/"server"; empty -> omitted
+    std::string server_id;               // empty -> omitted
+    std::string match_id;                // empty -> omitted
+    std::string session_id;              // empty -> omitted
 };
 
 struct BugReportPayload {
@@ -60,6 +67,10 @@ struct BugReportPayload {
     std::string steam_id;                // empty -> omitted
     std::vector<Breadcrumb> breadcrumbs; // empty -> omitted
     bool log{false};                     // always serialized
+    std::string role;                    // "client"/"server"; empty -> omitted
+    std::string server_id;               // empty -> omitted
+    std::string match_id;                // empty -> omitted
+    std::string session_id;              // empty -> omitted
 };
 
 struct EventPayload {
@@ -71,6 +82,10 @@ struct EventPayload {
     std::string user_id; // empty -> omitted
     /** Flat string attributes in insertion order; empty -> omitted. */
     std::vector<std::pair<std::string, std::string>> attributes;
+    std::string role;       // "client"/"server"; empty -> omitted
+    std::string server_id;  // empty -> omitted
+    std::string match_id;   // empty -> omitted
+    std::string session_id; // empty -> omitted
 };
 
 struct HeartbeatPayload {

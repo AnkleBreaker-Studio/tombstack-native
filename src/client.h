@@ -49,6 +49,9 @@ public:
 
     tombstone_result set_user(const char *user_id, const char *steam_id);
     tombstone_result set_consent(bool granted);
+    tombstone_result set_match_context(const char *server_id, const char *match_id);
+    tombstone_result start_match(char *out_match_id, std::size_t out_cap);
+    tombstone_result end_match();
     tombstone_result add_breadcrumb(tombstone_level level, const char *message);
     tombstone_result track_event(const char *name, const char *const *keys,
                                  const char *const *values, std::size_t count);
@@ -74,6 +77,14 @@ private:
                         SidecarKind kind, bool request_log, bool log_from_previous);
     std::string current_user_id() const;
     std::string current_steam_id() const;
+
+    /** Snapshot of the cached multiplayer correlation context (mutex-guarded). */
+    struct MatchContext {
+        std::string role;       // "" -> omitted (never an empty-string enum on the wire)
+        std::string server_id;  // "" -> omitted
+        std::string match_id;   // "" -> omitted
+    };
+    MatchContext current_match_context() const;
 
     // diagnostics + storage (order matters: sdk_log_ first, it is referenced)
     SdkLog sdk_log_;
@@ -113,6 +124,12 @@ private:
     mutable std::mutex user_mutex_;
     std::string user_id_;
     std::string steam_id_;
+
+    // multiplayer correlation context (role/serverId/matchId stamped on payloads)
+    mutable std::mutex match_mutex_;
+    std::string role_;
+    std::string server_id_;
+    std::string match_id_;
 
     // heartbeat timer thread
     std::thread heartbeat_thread_;

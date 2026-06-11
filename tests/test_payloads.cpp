@@ -154,3 +154,83 @@ TEST_CASE("payloads", "heartbeat is byte exact with and without userId") {
                          R"("buildVersion":"1.0.0","os":"windows","arch":"x86",)"
                          R"("userId":"player-7"})"});
 }
+
+TEST_CASE("payloads", "crash stamps correlation dimensions and omits empty ones") {
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "linux";
+    payload.arch = "x64";
+    payload.signature = "deadbeef";
+    payload.stack_hint = "hint";
+    payload.log = false;
+    payload.role = "server";
+    payload.server_id = "srv-eu-1";
+    payload.match_id = "m-42";
+    payload.session_id = "sess-9";
+    CHECK_EQ(build_crash_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"linux","arch":"x64",)"
+                         R"("signature":"deadbeef","stackHint":"hint","log":false,)"
+                         R"("role":"server","serverId":"srv-eu-1","matchId":"m-42",)"
+                         R"("sessionId":"sess-9"})"});
+
+    // A client crash with no server/match context omits role/serverId/matchId
+    // (never an empty-string enum) but still carries the session id.
+    CrashPayload client_crash;
+    client_crash.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    client_crash.build_version = "1.0.0";
+    client_crash.os = "windows";
+    client_crash.arch = "x64";
+    client_crash.signature = "deadbeef";
+    client_crash.stack_hint = "hint";
+    client_crash.log = false;
+    client_crash.session_id = "sess-9";
+    const std::string client_json = build_crash_json(client_crash);
+    CHECK_EQ(client_json,
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                         R"("signature":"deadbeef","stackHint":"hint","log":false,)"
+                         R"("sessionId":"sess-9"})"});
+    CHECK(client_json.find("\"role\"") == std::string::npos);
+    CHECK(client_json.find("\"serverId\"") == std::string::npos);
+    CHECK(client_json.find("\"matchId\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "bug report stamps correlation dimensions") {
+    BugReportPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "2.0.0";
+    payload.os = "macos";
+    payload.arch = "arm64";
+    payload.message = "button does nothing";
+    payload.log = true;
+    payload.role = "server";
+    payload.server_id = "srv-eu-1";
+    payload.match_id = "m-42";
+    payload.session_id = "sess-9";
+    CHECK_EQ(build_bug_report_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"2.0.0","os":"macos","arch":"arm64",)"
+                         R"("message":"button does nothing","log":true,)"
+                         R"("role":"server","serverId":"srv-eu-1","matchId":"m-42",)"
+                         R"("sessionId":"sess-9"})"});
+}
+
+TEST_CASE("payloads", "event stamps correlation dimensions after attributes") {
+    EventPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.name = "spawn";
+    payload.match_id = "m-42";
+    payload.session_id = "sess-9";
+    // role + serverId empty -> omitted; matchId/sessionId present.
+    const std::string json = build_event_json(payload);
+    CHECK_EQ(json, std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                               R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                               R"("name":"spawn","matchId":"m-42","sessionId":"sess-9"})"});
+    CHECK(json.find("\"role\"") == std::string::npos);
+    CHECK(json.find("\"serverId\"") == std::string::npos);
+}
