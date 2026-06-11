@@ -108,6 +108,13 @@ void JsonWriter::number_field(std::string_view name, double value) {
     out_ += buffer;
 }
 
+void JsonWriter::int_field(std::string_view name, long long value) {
+    name_prefix(name);
+    char buffer[32] = {};
+    std::snprintf(buffer, sizeof(buffer), "%lld", value);
+    out_ += buffer;
+}
+
 void JsonWriter::raw_element(std::string_view raw) {
     element_prefix();
     out_.append(raw.data(), raw.size());

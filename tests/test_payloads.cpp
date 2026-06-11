@@ -316,12 +316,24 @@ TEST_CASE("payloads", "pull request body clamps to the schema maxima") {
 }
 
 TEST_CASE("payloads", "pull fulfill omits empty optionals") {
-    CHECK_EQ(build_pull_fulfill_json("player-7", "sess-9", "", ""),
+    // No nonce (older server): pre-S1 body shape, empty correlation ids omitted.
+    CHECK_EQ(build_pull_fulfill_json("player-7", "sess-9", "", "", "", 0),
              std::string{R"({"userId":"player-7","sessionId":"sess-9"})"});
-    CHECK_EQ(build_pull_fulfill_json("u", "s", "m", "srv"),
+    CHECK_EQ(build_pull_fulfill_json("u", "s", "m", "srv", "", 0),
              std::string{R"({"userId":"u","sessionId":"s","matchId":"m","serverId":"srv"})"});
     // An anonymous, context-free client posts an empty object (schema accepts {}).
-    CHECK_EQ(build_pull_fulfill_json("", "", "", ""), std::string{"{}"});
+    CHECK_EQ(build_pull_fulfill_json("", "", "", "", "", 0), std::string{"{}"});
+}
+
+TEST_CASE("payloads", "pull fulfill carries the nonce and expiry when present (S1)") {
+    // nonceExpiry is emitted as a JSON integer (never exponent form), nonce as a string,
+    // both after the correlation ids — matching the server pullFulfillSchema field order.
+    CHECK_EQ(build_pull_fulfill_json("player-7", "sess-9", "", "", "abc123nonce", 1700000123),
+             std::string{R"({"userId":"player-7","sessionId":"sess-9",)"
+                         R"("nonce":"abc123nonce","nonceExpiry":1700000123})"});
+    // A fully anonymous client still presents the nonce pair (sessionId is normally set).
+    CHECK_EQ(build_pull_fulfill_json("", "sess-9", "", "", "n0nce", 42),
+             std::string{R"({"sessionId":"sess-9","nonce":"n0nce","nonceExpiry":42})"});
 }
 
 TEST_CASE("payloads", "pull target matcher mirrors the server heartbeatMatchesRequest") {

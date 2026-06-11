@@ -177,13 +177,21 @@ std::string build_pull_request_json(std::string_view target_type, std::string_vi
 }
 
 std::string build_pull_fulfill_json(const std::string &user_id, const std::string &session_id,
-                                    const std::string &match_id, const std::string &server_id) {
+                                    const std::string &match_id, const std::string &server_id,
+                                    const std::string &nonce, long long nonce_expiry) {
     JsonWriter json;
     json.begin_object();
     optional_field(json, "userId", user_id, limits::user_id);
     optional_field(json, "sessionId", session_id, limits::session_id);
     optional_field(json, "matchId", match_id, limits::match_id);
     optional_field(json, "serverId", server_id, limits::server_id);
+    // S1: present the fulfilment nonce minted for this request (with its expiry) so the
+    // server can authenticate the honouring client. Emitted as a pair only when present
+    // — an older server mints none, so the body stays the pre-S1 shape (fail-soft).
+    if (!nonce.empty()) {
+        clamped_field(json, "nonce", nonce, limits::pull_nonce);
+        json.int_field("nonceExpiry", nonce_expiry);
+    }
     json.end_object();
     return json.str();
 }

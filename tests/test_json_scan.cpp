@@ -2,6 +2,7 @@
 #include "test_framework.h"
 
 using tombstone::find_bool_field;
+using tombstone::find_int_field;
 using tombstone::find_log_upload_url;
 using tombstone::find_pending_requests;
 using tombstone::find_string_field;
@@ -36,6 +37,17 @@ TEST_CASE("json_scan", "finds boolean fields") {
     CHECK(!find_bool_field(R"({"other":true})", "log").has_value());
 }
 
+TEST_CASE("json_scan", "finds integer fields") {
+    CHECK_EQ(find_int_field(R"({"n":1700000123})", "n").value_or(-1), 1700000123LL);
+    CHECK_EQ(find_int_field(R"({"n": 42})", "n").value_or(-1), 42LL);
+    CHECK_EQ(find_int_field(R"({"n":-5})", "n").value_or(0), -5LL);
+    // A non-integer (string, float, bool) or absent key yields nullopt.
+    CHECK(!find_int_field(R"({"n":"42"})", "n").has_value());
+    CHECK(!find_int_field(R"({"n":4.5})", "n").has_value());
+    CHECK(!find_int_field(R"({"n":true})", "n").has_value());
+    CHECK(!find_int_field(R"({"other":1})", "n").has_value());
+}
+
 TEST_CASE("json_scan", "extracts the presigned log upload url") {
     const auto url = find_log_upload_url(ingest_response);
     CHECK(url.has_value());
@@ -67,6 +79,28 @@ TEST_CASE("json_scan", "parses the heartbeat-ack pending requests") {
     CHECK_EQ(pending[1].request_id, std::string{"r2"});
     CHECK_EQ(pending[1].target_type, std::string{"server"});
     CHECK_EQ(pending[1].target_value, std::string{"srv-eu-1"});
+}
+
+TEST_CASE("json_scan", "parses the fulfilment nonce and expiry on pending requests (S1)") {
+    const char *ack =
+        R"({"success":true,"data":{"pendingRequests":[)"
+        R"({"requestId":"r1","targetType":"userId","targetValue":"player-7",)"
+        R"("fulfillNonce":"AbC_nonce-123","nonceExpiry":1700000123}]}})";
+    const auto pending = find_pending_requests(ack);
+    CHECK_EQ(pending.size(), static_cast<std::size_t>(1));
+    CHECK_EQ(pending[0].request_id, std::string{"r1"});
+    CHECK_EQ(pending[0].fulfill_nonce, std::string{"AbC_nonce-123"});
+    CHECK_EQ(pending[0].nonce_expiry, 1700000123LL);
+}
+
+TEST_CASE("json_scan", "leaves nonce empty and expiry zero on an older-server ack") {
+    const char *ack =
+        R"({"success":true,"data":{"pendingRequests":[)"
+        R"({"requestId":"r1","targetType":"server","targetValue":"srv-1"}]}})";
+    const auto pending = find_pending_requests(ack);
+    CHECK_EQ(pending.size(), static_cast<std::size_t>(1));
+    CHECK_EQ(pending[0].fulfill_nonce, std::string{""});
+    CHECK_EQ(pending[0].nonce_expiry, 0LL);
 }
 
 TEST_CASE("json_scan", "returns no pending requests for an empty or absent array") {

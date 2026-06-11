@@ -42,6 +42,7 @@ constexpr std::size_t metric_unit = 16; // short label e.g. "ms"/"fps"/"hz"
 constexpr std::size_t pull_target_type = 32;  // enum "userId"/"sessionId"/"matchId"/"server"
 constexpr std::size_t pull_target_value = 128;
 constexpr std::size_t pull_reason = 280;      // server MAX_PULL_REASON
+constexpr std::size_t pull_nonce = 256;       // server pullFulfillSchema nonce max
 }  // namespace limits
 
 struct CrashPayload {
@@ -147,12 +148,16 @@ std::string build_pull_request_json(std::string_view target_type, std::string_vi
 
 /**
  * Body for `POST /api/v1/pull-requests/{requestId}/fulfill` — the client's asserted
- * correlation identity. Mirrors the server `pullFulfillSchema`: every field is
- * optional and an empty value is OMITTED (never serialized as ""), field order
- * userId/sessionId/matchId/serverId.
+ * correlation identity plus the single-use fulfilment nonce (S1). Mirrors the server
+ * `pullFulfillSchema`, field order userId/sessionId/matchId/serverId/nonce/nonceExpiry.
+ * The correlation ids are optional and an empty value is OMITTED (never serialized as
+ * ""). `nonce` (the `fulfillNonce` echoed back from the heartbeat ack) and `nonceExpiry`
+ * are emitted as a pair only when `nonce` is non-empty: an older server mints no nonce,
+ * so the SDK falls back to the pre-S1 body shape rather than send empty credentials.
  */
 std::string build_pull_fulfill_json(const std::string &user_id, const std::string &session_id,
-                                    const std::string &match_id, const std::string &server_id);
+                                    const std::string &match_id, const std::string &server_id,
+                                    const std::string &nonce, long long nonce_expiry);
 
 /**
  * Pure: does a queued pull request target THIS client? Mirror of the server's

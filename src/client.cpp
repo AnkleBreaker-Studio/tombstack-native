@@ -308,7 +308,8 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
             }
             UploadJob job;
             job.url = endpoint_ + pull_requests_path + "/" + request.request_id + "/fulfill";
-            job.body = build_pull_fulfill_json(user_id, session_id_, ctx.match_id, ctx.server_id);
+            job.body = build_pull_fulfill_json(user_id, session_id_, ctx.match_id, ctx.server_id,
+                                               request.fulfill_nonce, request.nonce_expiry);
             job.durability = Durability::persist_on_failure;  // retried in-session with backoff
             job.request_log = true;  // chase data.logUpload -> PUT the current session log
             job.no_persist = true;   // the presign is time-sensitive; never sidecar across launches

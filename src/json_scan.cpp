@@ -149,6 +149,38 @@ std::optional<bool> find_bool_field(std::string_view json, std::string_view key)
     return std::nullopt;
 }
 
+std::optional<long long> find_int_field(std::string_view json, std::string_view key) {
+    const std::size_t at = find_value_start(json, key);
+    if (at == std::string_view::npos || at >= json.size()) {
+        return std::nullopt;
+    }
+    std::size_t cursor = at;
+    bool negative = false;
+    if (json[cursor] == '-') {
+        negative = true;
+        ++cursor;
+    }
+    constexpr std::size_t max_digits = 18;  // fits in int64 without overflow
+    long long value = 0;
+    std::size_t digits = 0;
+    while (cursor < json.size() && json[cursor] >= '0' && json[cursor] <= '9' &&
+           digits < max_digits) {
+        value = value * 10 + (json[cursor] - '0');
+        ++cursor;
+        ++digits;
+    }
+    if (digits == 0) {
+        return std::nullopt;  // no integer token (absent, or a non-numeric value)
+    }
+    // Reject a fractional/exponent value: only a clean integer round-trips safely.
+    if (cursor < json.size() && (json[cursor] == '.' || json[cursor] == 'e' ||
+                                 json[cursor] == 'E' ||
+                                 (json[cursor] >= '0' && json[cursor] <= '9'))) {
+        return std::nullopt;
+    }
+    return negative ? -value : value;
+}
+
 std::optional<std::string> find_log_upload_url(std::string_view response_body) {
     const std::size_t at = find_value_start(response_body, "logUpload");
     if (at == std::string_view::npos || at >= response_body.size() ||
@@ -224,6 +256,8 @@ std::vector<PendingPullRequest> find_pending_requests(std::string_view response_
                     request.request_id = find_string_field(object, "requestId").value_or("");
                     request.target_type = find_string_field(object, "targetType").value_or("");
                     request.target_value = find_string_field(object, "targetValue").value_or("");
+                    request.fulfill_nonce = find_string_field(object, "fulfillNonce").value_or("");
+                    request.nonce_expiry = find_int_field(object, "nonceExpiry").value_or(0);
                     out.push_back(std::move(request));
                     object_start = std::string_view::npos;
                     if (out.size() >= max_requests) {

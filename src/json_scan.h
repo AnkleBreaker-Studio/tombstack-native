@@ -25,6 +25,11 @@ std::optional<std::string> find_string_field(std::string_view json, std::string_
 /** First boolean value for `key`. nullopt when absent or not true/false. */
 std::optional<bool> find_bool_field(std::string_view json, std::string_view key);
 
+/** First integer value for `key`. nullopt when absent or not an integer token.
+ *  Reads an optional sign then digits (bounded); a fractional/exponent value is
+ *  rejected. Sufficient for the small Unix-epoch numbers the SDK reads back. */
+std::optional<long long> find_int_field(std::string_view json, std::string_view key);
+
 /**
  * Presigned session-log PUT URL from a crash/bug ingest response:
  * locates the `"logUpload"` object, then its `"url"`. nullopt when the server
@@ -37,6 +42,8 @@ struct PendingPullRequest {
     std::string request_id;
     std::string target_type;  // userId | sessionId | matchId | server
     std::string target_value;
+    std::string fulfill_nonce;   // single-use nonce minted for this request (S1); "" on older servers
+    long long nonce_expiry{0};   // Unix-epoch expiry of fulfill_nonce; echoed back verbatim
 };
 
 /**

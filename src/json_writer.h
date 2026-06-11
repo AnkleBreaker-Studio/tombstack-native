@@ -41,6 +41,10 @@ public:
     /** Emit a numeric field (`"name":<n>`) printed with %.17g so it round-trips.
      *  Caller must pass a finite value (NaN/Infinity is not valid JSON). */
     void number_field(std::string_view name, double value);
+    /** Emit an integer-valued field (`"name":<n>`) printed exactly, never in
+     *  exponent form — used for values that must round-trip as JSON integers
+     *  (e.g. a Unix-epoch nonce expiry echoed back verbatim to the server). */
+    void int_field(std::string_view name, long long value);
 
     /** Insert an already-serialized JSON value as one array element, verbatim
      *  (no quoting/escaping). Used to splice pre-built items into a batch. */
