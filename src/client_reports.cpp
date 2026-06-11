@@ -70,6 +70,7 @@ void Client::enqueue_ingest(const char *path, std::string body, Durability durab
     job.kind = kind;
     job.request_log = request_log;
     job.log_from_previous = log_from_previous;
+    job.sign_body = true;  // crashes/bug-reports/events are ingest POSTs — sign them (S3)
     if (durability == Durability::write_ahead && storage_available_) {
         // Persisted BEFORE the first attempt so a quit/crash cannot lose it.
         job.sidecar_path = sidecars_.write(kind, job.body);

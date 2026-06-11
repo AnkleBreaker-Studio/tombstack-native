@@ -32,9 +32,15 @@ public:
     Transport(Transport &&) = delete;
     Transport &operator=(Transport &&) = delete;
 
-    /** POST a JSON ingest body with `Authorization: Bearer <token>`. */
+    /**
+     * POST a JSON body with `Authorization: Bearer <token>`. When `sign` is set
+     * (ingest endpoints only — never pull/editor), an `X-Tombstone-Signature`
+     * header is computed at send time over the raw body keyed by `token` (S3).
+     * Signing is fail-soft: any signing error sends the request unsigned (the
+     * server accepts unsigned ingest during the rollout).
+     */
     HttpResponse post_json(const std::string &url, const std::string &token,
-                           const std::string &body, long timeout_seconds);
+                           const std::string &body, long timeout_seconds, bool sign);
 
     /**
      * PUT raw text to a presigned URL (session-log upload). Sends

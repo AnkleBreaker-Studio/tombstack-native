@@ -15,6 +15,10 @@ Notes:
   algorithm in `src/clock.cpp` are independent implementations of public
   algorithms (FIPS 180-4; Howard Hinnant's public-domain date algorithms) —
   no third-party code is vendored.
+- The HMAC-SHA256 in `src/signature.cpp` (request signing, §S3) is an
+  independent implementation of the RFC 2104 HMAC construction layered over
+  that same local SHA-256 — again no third-party code is vendored. It is
+  validated in CI against the RFC 4231 published test vectors.
 
 Phase 2 (minidump capture) will add: sentry-native (MIT), Crashpad
 (Apache-2.0), mini_chromium (BSD) — provenance will be recorded here when

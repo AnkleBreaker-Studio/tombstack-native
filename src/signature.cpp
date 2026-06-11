@@ -79,9 +79,8 @@ std::string_view trim(std::string_view text) noexcept {
     return text;
 }
 
-}  // namespace
-
-std::string sha256_hex(std::string_view data) {
+// Raw 32-byte SHA-256 digest of `data` (the binary form HMAC composes over).
+std::array<unsigned char, 32> sha256_raw(std::string_view data) {
     Sha256State state;
     const auto *bytes = reinterpret_cast<const unsigned char *>(data.data());
     const std::size_t full_blocks = data.size() / 64;
@@ -105,15 +104,72 @@ std::string sha256_hex(std::string_view data) {
         state.process_block(tail.data() + i * 64);
     }
 
+    std::array<unsigned char, 32> digest = {};
+    for (std::size_t word = 0; word < 8; ++word) {
+        digest[word * 4] = static_cast<unsigned char>((state.h[word] >> 24U) & 0xFFU);
+        digest[word * 4 + 1] = static_cast<unsigned char>((state.h[word] >> 16U) & 0xFFU);
+        digest[word * 4 + 2] = static_cast<unsigned char>((state.h[word] >> 8U) & 0xFFU);
+        digest[word * 4 + 3] = static_cast<unsigned char>(state.h[word] & 0xFFU);
+    }
+    return digest;
+}
+
+std::string to_hex(const unsigned char *bytes, std::size_t length) {
     static constexpr char hex_digits[] = "0123456789abcdef";
     std::string out;
-    out.reserve(64);
-    for (const std::uint32_t word : state.h) {
-        for (int shift = 28; shift >= 0; shift -= 4) {
-            out += hex_digits[(word >> static_cast<unsigned>(shift)) & 0xFU];
-        }
+    out.reserve(length * 2);
+    for (std::size_t i = 0; i < length; ++i) {
+        out += hex_digits[(bytes[i] >> 4U) & 0xFU];
+        out += hex_digits[bytes[i] & 0xFU];
     }
     return out;
+}
+
+}  // namespace
+
+std::string sha256_hex(std::string_view data) {
+    const std::array<unsigned char, 32> digest = sha256_raw(data);
+    return to_hex(digest.data(), digest.size());
+}
+
+std::string hmac_sha256_hex(std::string_view key, std::string_view message) {
+    constexpr std::size_t block_size = 64;
+    // Keys longer than the block are first hashed (RFC 2104).
+    std::array<unsigned char, block_size> key_block = {};
+    if (key.size() > block_size) {
+        const std::array<unsigned char, 32> hashed = sha256_raw(key);
+        std::memcpy(key_block.data(), hashed.data(), hashed.size());
+    } else if (!key.empty()) {
+        std::memcpy(key_block.data(), key.data(), key.size());
+    }
+
+    std::string inner;
+    inner.reserve(block_size + message.size());
+    for (const unsigned char byte : key_block) {
+        inner += static_cast<char>(byte ^ 0x36U);
+    }
+    inner.append(message.data(), message.size());
+    const std::array<unsigned char, 32> inner_digest = sha256_raw(inner);
+
+    std::string outer;
+    outer.reserve(block_size + inner_digest.size());
+    for (const unsigned char byte : key_block) {
+        outer += static_cast<char>(byte ^ 0x5cU);
+    }
+    outer.append(reinterpret_cast<const char *>(inner_digest.data()), inner_digest.size());
+    const std::array<unsigned char, 32> mac = sha256_raw(outer);
+    return to_hex(mac.data(), mac.size());
+}
+
+std::string build_ingest_signature_header(std::string_view ingest_key, std::string_view body,
+                                          std::int64_t unix_seconds) {
+    const std::string t = std::to_string(unix_seconds);
+    std::string signed_input;
+    signed_input.reserve(t.size() + 1 + body.size());
+    signed_input += t;
+    signed_input += '.';
+    signed_input.append(body.data(), body.size());
+    return "t=" + t + ",v1=" + hmac_sha256_hex(ingest_key, signed_input);
 }
 
 std::string compute_crash_signature(std::string_view stack_hint, std::string_view stack_trace) {

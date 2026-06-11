@@ -194,7 +194,7 @@ void Worker::process(UploadJob &job) {
             return;
         }
         const HttpResponse response =
-            transport_.post_json(job.url, token_, job.body, request_timeout_seconds);
+            transport_.post_json(job.url, token_, job.body, request_timeout_seconds, job.sign_body);
         handle_post_result(job, response.transport_error, response.status, response.body);
     } catch (const std::exception &e) {
         sdk_log_.warn(std::string{"upload bookkeeping failed: "} + e.what());

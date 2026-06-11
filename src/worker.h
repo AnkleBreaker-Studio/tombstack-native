@@ -43,6 +43,7 @@ struct UploadJob {
     bool log_from_previous{false};       // a granted presign uploads previous-session.log
     bool no_persist{false};              // batch envelopes: retry in-session, never sidecar'd
     bool parse_ack{false};               // heartbeat: hand the 2xx body to the ack handler
+    bool sign_body{false};               // ingest POST: attach the X-Tombstone-Signature header (S3)
     int attempt{0};
     std::chrono::steady_clock::time_point not_before{};
 };

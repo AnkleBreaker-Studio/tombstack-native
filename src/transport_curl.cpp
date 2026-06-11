@@ -1,9 +1,12 @@
 #include "transport.h"
 
 #include "sdk_log.h"
+#include "signature.h"
 
 #include <curl/curl.h>
 
+#include <cstdint>
+#include <ctime>
 #include <memory>
 #include <mutex>
 
@@ -89,7 +92,7 @@ Transport::Transport(SdkLog &sdk_log) : sdk_log_(sdk_log) { curl_global_acquire(
 Transport::~Transport() { curl_global_release(); }
 
 HttpResponse Transport::post_json(const std::string &url, const std::string &token,
-                                  const std::string &body, long timeout_seconds) {
+                                  const std::string &body, long timeout_seconds, bool sign) {
     try {
         const CurlHandle handle{curl_easy_init()};
         if (!handle) {
@@ -99,6 +102,22 @@ HttpResponse Transport::post_json(const std::string &url, const std::string &tok
         headers = append_header(std::move(headers), "Content-Type: application/json");
         const std::string auth = "Authorization: Bearer " + token;
         headers = append_header(std::move(headers), auth.c_str());
+
+        // S3: sign ingest POSTs at send time over the raw body. Fail-soft — if the
+        // header cannot be built we send unsigned (the server accepts unsigned during
+        // the signing rollout). Computed here, on the worker thread, off the game path.
+        std::string signature_header;
+        if (sign) {
+            try {
+                const auto unix_seconds = static_cast<std::int64_t>(std::time(nullptr));
+                signature_header =
+                    "X-Tombstone-Signature: " +
+                    build_ingest_signature_header(token, body, unix_seconds);
+                headers = append_header(std::move(headers), signature_header.c_str());
+            } catch (...) {
+                sdk_log_.debug("request signing failed; sending unsigned");
+            }
+        }
 
         curl_easy_setopt(handle.get(), CURLOPT_URL, url.c_str());
         curl_easy_setopt(handle.get(), CURLOPT_POST, 1L);

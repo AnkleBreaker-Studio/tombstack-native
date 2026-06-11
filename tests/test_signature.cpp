@@ -1,7 +1,11 @@
 #include "signature.h"
 #include "test_framework.h"
 
+#include <string>
+
+using tombstone::build_ingest_signature_header;
 using tombstone::compute_crash_signature;
+using tombstone::hmac_sha256_hex;
 using tombstone::sha256_hex;
 
 TEST_CASE("signature", "sha256 matches the FIPS test vectors") {
@@ -15,6 +19,32 @@ TEST_CASE("signature", "sha256 matches the FIPS test vectors") {
     CHECK_EQ(sha256_hex("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmno"
                         "ijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"),
              std::string{"cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"});
+}
+
+TEST_CASE("signature", "hmac-sha256 matches the RFC 4231 test vectors") {
+    // RFC 4231 Test Case 1: key = 20 x 0x0b, data = "Hi There".
+    CHECK_EQ(hmac_sha256_hex(std::string(20, '\x0b'), "Hi There"),
+             std::string{"b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"});
+    // RFC 4231 Test Case 2: key = "Jefe", data = "what do ya want for nothing?".
+    CHECK_EQ(hmac_sha256_hex("Jefe", "what do ya want for nothing?"),
+             std::string{"5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"});
+}
+
+TEST_CASE("signature", "hmac with a long key (hashed first per RFC 2104)") {
+    // RFC 4231 Test Case 6: key = 131 x 0xaa, data = the long "...First Hash Key First" string.
+    CHECK_EQ(hmac_sha256_hex(std::string(131, '\xaa'),
+                             "Test Using Larger Than Block-Size Key - Hash Key First"),
+             std::string{"60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"});
+}
+
+TEST_CASE("signature", "ingest signature header has the t=...,v1=... shape") {
+    const std::string body = R"({"name":"boot"})";
+    const std::string header = build_ingest_signature_header("tmb_secret", body, 1700000123);
+    // The header binds the body to the timestamp: v1 is the HMAC of "<t>.<body>".
+    const std::string expected =
+        "t=1700000123,v1=" + hmac_sha256_hex("tmb_secret", "1700000123." + body);
+    CHECK_EQ(header, expected);
+    CHECK_EQ(header.compare(0, 14, "t=1700000123,v"), 0);
 }
 
 TEST_CASE("signature", "crash signature is 32 lowercase hex chars") {

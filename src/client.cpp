@@ -185,6 +185,7 @@ void Client::drain_sidecars() {
         job.request_log = (record.kind != SidecarKind::event) &&
                           find_bool_field(job.body, "log").value_or(false);
         job.log_from_previous = true;
+        job.sign_body = true;  // restored crash/bug/event sidecars are ingest POSTs (S3)
         worker_->enqueue(std::move(job));
     }
 }
@@ -259,6 +260,7 @@ void Client::heartbeat_loop() {
                 job.body = build_heartbeat_json(payload);
                 job.durability = Durability::ephemeral;  // a missed beat is stale data
                 job.parse_ack = true;  // the 202 ack may carry pull requests for us
+                job.sign_body = true;  // heartbeats are an ingest POST — sign them (S3)
                 worker_->enqueue(std::move(job));
             } catch (const std::exception &e) {
                 sdk_log_.warn(std::string{"heartbeat build failed: "} + e.what());
@@ -400,6 +402,7 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
     job.body = std::move(*envelope);
     job.durability = Durability::persist_on_failure;  // retried with backoff in-session
     job.no_persist = true;  // a batch envelope is not a single-item sidecar
+    job.sign_body = true;  // events:batch / metrics:batch are ingest POSTs — sign them (S3)
     worker_->enqueue(std::move(job));
 }
 
