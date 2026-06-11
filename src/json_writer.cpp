@@ -99,6 +99,20 @@ void JsonWriter::bool_field(std::string_view name, bool value) {
     out_ += value ? "true" : "false";
 }
 
+void JsonWriter::number_field(std::string_view name, double value) {
+    name_prefix(name);
+    char buffer[32] = {};
+    // %.17g is the shortest round-trip precision for an IEEE-754 double; the
+    // caller guarantees finiteness, so "inf"/"nan" never reach the wire.
+    std::snprintf(buffer, sizeof(buffer), "%.17g", value);
+    out_ += buffer;
+}
+
+void JsonWriter::raw_element(std::string_view raw) {
+    element_prefix();
+    out_.append(raw.data(), raw.size());
+}
+
 void JsonWriter::element_prefix() {
     if (!needs_comma_.empty()) {
         if (needs_comma_.back()) {

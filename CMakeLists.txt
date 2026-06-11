@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tombstone VERSION 0.2.0 LANGUAGES C CXX)
+project(tombstone VERSION 0.3.0 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
@@ -66,6 +66,7 @@ endif()
 # Shared by the SDK and the unit tests, so tests never need a TLS stack.
 # ---------------------------------------------------------------------------
 set(TOMBSTONE_CORE_SOURCES
+  src/batch.cpp
   src/breadcrumb_ring.cpp
   src/clock.cpp
   src/dedupe.cpp
@@ -150,6 +151,7 @@ if(TOMBSTONE_BUILD_TESTS)
   enable_testing()
   add_executable(tombstone_tests
     tests/main.cpp
+    tests/test_batch.cpp
     tests/test_breadcrumb_ring.cpp
     tests/test_clock.cpp
     tests/test_dedupe.cpp
@@ -170,7 +172,7 @@ if(TOMBSTONE_BUILD_TESTS)
   target_link_libraries(tombstone_tests PRIVATE Threads::Threads tombstone_warnings)
 
   foreach(suite
-      breadcrumb_ring clock dedupe json_scan json_writer
+      batch breadcrumb_ring clock dedupe json_scan json_writer
       payloads session_log session_marker sidecar signature)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()

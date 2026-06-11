@@ -2,6 +2,36 @@
 
 All notable changes to the Tombstone Native SDK.
 
+## [0.3.0] - 2026-06-11
+
+### Added
+
+- **`tombstone_track_metric(handle, name, value, unit)`**: a new C ABI call for
+  numeric metric samples (tick rate, RTT, memory, ...). Routed through the
+  no-throw `with_client` wrapper; stamps the cached correlation context
+  (role/serverId/matchId/sessionId) plus buildVersion/os/arch/occurredAtIso onto
+  each sample. `value` must be finite (NaN/Infinity is dropped at the boundary);
+  `unit` is an optional short label, omitted when NULL/empty. The metric item
+  JSON mirrors the server `metricSchema`
+  (`{ name, value, unit?, occurredAtIso, buildVersion, os, arch, userId?, role?,
+  serverId?, matchId?, sessionId? }`, `value` a JSON number, empty optionals
+  omitted).
+- **Event & metric batching (spec section 16)**: events and metrics now
+  accumulate into a bounded, preallocated, drop-oldest buffer (cap 256) and are
+  flushed as a `{ "sentAtIso", "items": [...] }` envelope when any trigger fires
+  — count (50), age (10 s), or quit/pre-shutdown — and POSTed to
+  `/api/v1/ingest/events:batch` / `/api/v1/ingest/metrics:batch`. Each item keeps
+  its own `occurredAtIso`; only the envelope carries the flush time. Draining and
+  sending happen on the existing worker thread (zero main-thread I/O, spec
+  section 15); capture calls are an O(1) enqueue. Batch sends reuse the worker's
+  exponential backoff and are fail-soft (dropped on terminal failure rather than
+  mis-persisted as single-item sidecars). Crashes, bug reports, and heartbeats
+  remain individual and write-ahead durable.
+- New `Batch` buffer type with byte-exact builder tests (`build_metric_json`,
+  `build_batch_envelope`) in `tests/test_payloads.cpp` and buffer-behavior tests
+  (count/age/forced triggers, drop-oldest) in `tests/test_batch.cpp`, both wired
+  into CTest.
+
 ## [0.2.0] - 2026-06-11
 
 ### Added

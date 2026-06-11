@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -40,6 +41,7 @@ struct UploadJob {
     std::filesystem::path sidecar_path;  // non-empty when backed by a pending file
     bool request_log{false};             // body carries "log":true -> chase the presign on 2xx
     bool log_from_previous{false};       // a granted presign uploads previous-session.log
+    bool no_persist{false};              // batch envelopes: retry in-session, never sidecar'd
     int attempt{0};
     std::chrono::steady_clock::time_point not_before{};
 };
@@ -60,6 +62,9 @@ public:
     static constexpr long request_timeout_seconds = 15;
     static constexpr long log_put_timeout_seconds = 30;
     static constexpr std::chrono::seconds log_flush_interval{5};
+    /** Idle wake cadence while batching is active so the age trigger is seen
+     *  within ~1s (timed wait, never a busy loop -- spec section 15). */
+    static constexpr std::chrono::seconds batch_check_interval{1};
 
     Worker(Transport &transport, SidecarQueue &sidecars, SessionLog &session_log,
            SdkLog &sdk_log, std::string token);
@@ -77,6 +82,15 @@ public:
 
     /** Queue a job (thread-safe). Oldest entry is dropped when full. */
     void enqueue(UploadJob job);
+
+    /** Install the batch-drain callback, invoked on each worker wake (off the
+     *  caller's thread) to flush count/age-ready event/metric batches. Must be
+     *  set before start() (single-threaded init); the worker owns no batch
+     *  semantics, it just gives them a thread to run on. */
+    void set_batch_drainer(std::function<void()> drainer);
+
+    /** Nudge the worker to run the batch drainer now (count trigger). */
+    void wake();
 
     /** True when the queue drained (and nothing is in flight) within the timeout. */
     bool flush(std::chrono::milliseconds timeout);
@@ -104,6 +118,8 @@ private:
     bool running_{false};
     bool in_flight_{false};
     std::atomic<bool> previous_log_claimed_{false};
+    std::atomic<bool> wake_requested_{false};
+    std::function<void()> batch_drainer_;  // set before start(); read on the worker thread
     std::chrono::steady_clock::time_point next_log_flush_{};
     std::thread thread_;
 };

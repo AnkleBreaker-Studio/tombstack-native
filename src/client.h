@@ -3,6 +3,7 @@
 
 #include <tombstone/tombstone.h>
 
+#include "batch.h"
 #include "breadcrumb_ring.h"
 #include "dedupe.h"
 #include "sdk_log.h"
@@ -55,6 +56,7 @@ public:
     tombstone_result add_breadcrumb(tombstone_level level, const char *message);
     tombstone_result track_event(const char *name, const char *const *keys,
                                  const char *const *values, std::size_t count);
+    tombstone_result track_metric(const char *name, double value, const char *unit);
     tombstone_result report_crash(const char *signature, const char *stack_hint,
                                   const char *stack_trace, bool attach_log);
     tombstone_result report_bug(const char *category, const char *message, bool attach_log);
@@ -75,6 +77,16 @@ private:
     void record_breadcrumb(std::string_view level, std::string_view message);
     void enqueue_ingest(const char *path, std::string body, Durability durability,
                         SidecarKind kind, bool request_log, bool log_from_previous);
+
+    // --- batching (client.cpp): event/metric envelopes, sent off the worker thread ---
+    /** Drain one batch into the queue when a trigger fires (or `force`). */
+    void maybe_flush_batch(Batch &batch, const char *path,
+                           std::chrono::steady_clock::time_point now, bool force);
+    /** Worker-thread hook: flush count/age-ready event + metric batches. */
+    void drain_ready_batches();
+    /** Force-drain both batches (explicit flush / quit / pre-crash). */
+    void flush_all_batches();
+
     std::string current_user_id() const;
     std::string current_steam_id() const;
 
@@ -93,6 +105,11 @@ private:
     SidecarQueue sidecars_{sdk_log_};
     BreadcrumbRing breadcrumbs_;
     DedupeWindow dedupe_;
+
+    // Bounded, drop-oldest batch buffers (declared before worker_ so they
+    // outlive the worker thread that drains them; spec section 16).
+    Batch event_batch_;
+    Batch metric_batch_;
 
     // transport + delivery (created during init; Worker needs the token)
     std::unique_ptr<Transport> transport_;

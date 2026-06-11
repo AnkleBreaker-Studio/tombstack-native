@@ -38,6 +38,13 @@ public:
 
     void string_field(std::string_view name, std::string_view value);
     void bool_field(std::string_view name, bool value);
+    /** Emit a numeric field (`"name":<n>`) printed with %.17g so it round-trips.
+     *  Caller must pass a finite value (NaN/Infinity is not valid JSON). */
+    void number_field(std::string_view name, double value);
+
+    /** Insert an already-serialized JSON value as one array element, verbatim
+     *  (no quoting/escaping). Used to splice pre-built items into a batch. */
+    void raw_element(std::string_view raw);
 
     /** The serialized document so far. Valid once every begin_* is closed. */
     const std::string &str() const noexcept { return out_; }

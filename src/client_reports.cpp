@@ -7,6 +7,7 @@
 #include "transport.h"
 
 #include <chrono>
+#include <cmath>
 
 namespace tombstone {
 
@@ -14,7 +15,6 @@ namespace {
 
 constexpr const char *crashes_path = "/api/v1/ingest/crashes";
 constexpr const char *bug_reports_path = "/api/v1/ingest/bug-reports";
-constexpr const char *events_path = "/api/v1/ingest/events";
 
 const char *level_label(tombstone_level level) noexcept {
     switch (level) {
@@ -133,8 +133,43 @@ tombstone_result Client::track_event(const char *name, const char *const *keys,
         }
         payload.attributes.emplace_back(keys[i], values[i] != nullptr ? values[i] : "");
     }
-    enqueue_ingest(events_path, build_event_json(payload), Durability::persist_on_failure,
-                   SidecarKind::event, /*request_log=*/false, /*log_from_previous=*/false);
+    // Batched (spec section 16): the worker drains the envelope off this thread
+    // on count/age/quit. A count trigger wakes it so a burst flushes promptly.
+    if (event_batch_.add(build_event_json(payload))) {
+        worker_->wake();
+    }
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::track_metric(const char *name, double value, const char *unit) {
+    if (name == nullptr || name[0] == '\0') {
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+    }
+    if (!std::isfinite(value)) {
+        // NaN/Infinity would corrupt aggregation and is rejected by the metric
+        // schema; drop it at the boundary rather than ship invalid JSON.
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+    }
+    if (!capture_allowed()) {
+        return TOMBSTONE_DISABLED;
+    }
+    MetricPayload payload;
+    payload.name = name;
+    payload.value = value;
+    payload.unit = (unit != nullptr) ? unit : "";
+    payload.occurred_at_iso = now_iso8601_utc_ms();
+    payload.build_version = build_version_;
+    payload.os = os_;
+    payload.arch = arch_;
+    payload.user_id = current_user_id();
+    const MatchContext metric_ctx = current_match_context();
+    payload.role = metric_ctx.role;
+    payload.server_id = metric_ctx.server_id;
+    payload.match_id = metric_ctx.match_id;
+    payload.session_id = session_id_;
+    if (metric_batch_.add(build_metric_json(payload))) {
+        worker_->wake();
+    }
     return TOMBSTONE_OK;
 }
 

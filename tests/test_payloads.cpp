@@ -1,15 +1,21 @@
 #include "payloads.h"
 #include "test_framework.h"
 
+#include <string>
+#include <vector>
+
 using tombstone::Breadcrumb;
 using tombstone::BugReportPayload;
+using tombstone::build_batch_envelope;
 using tombstone::build_bug_report_json;
 using tombstone::build_crash_json;
 using tombstone::build_event_json;
 using tombstone::build_heartbeat_json;
+using tombstone::build_metric_json;
 using tombstone::CrashPayload;
 using tombstone::EventPayload;
 using tombstone::HeartbeatPayload;
+using tombstone::MetricPayload;
 
 TEST_CASE("payloads", "crash with every field is byte exact") {
     CrashPayload payload;
@@ -215,6 +221,58 @@ TEST_CASE("payloads", "bug report stamps correlation dimensions") {
                          R"("message":"button does nothing","log":true,)"
                          R"("role":"server","serverId":"srv-eu-1","matchId":"m-42",)"
                          R"("sessionId":"sess-9"})"});
+}
+
+TEST_CASE("payloads", "metric is byte exact with value, unit, and correlation") {
+    MetricPayload payload;
+    payload.name = "tickrate";
+    payload.value = 60.0;  // integral double -> "60", no trailing ".0"
+    payload.unit = "hz";
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.role = "server";
+    payload.server_id = "srv-1";
+    payload.match_id = "m-1";
+    // sessionId left empty -> must be OMITTED, never sent as "".
+    const std::string json = build_metric_json(payload);
+    CHECK_EQ(json, std::string{R"({"name":"tickrate","value":60,"unit":"hz",)"
+                               R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                               R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                               R"("role":"server","serverId":"srv-1","matchId":"m-1"})"});
+    CHECK(json.find("\"sessionId\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "minimal metric carries a fractional value and omits optionals") {
+    MetricPayload payload;
+    payload.name = "rtt";
+    payload.value = 42.5;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "linux";
+    payload.arch = "arm64";
+    const std::string json = build_metric_json(payload);
+    CHECK_EQ(json, std::string{R"({"name":"rtt","value":42.5,)"
+                               R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                               R"("buildVersion":"1.0.0","os":"linux","arch":"arm64"})"});
+    // No unit / userId / correlation -> all OMITTED.
+    CHECK(json.find("\"unit\"") == std::string::npos);
+    CHECK(json.find("\"userId\"") == std::string::npos);
+    CHECK(json.find("\"role\"") == std::string::npos);
+    CHECK(json.find("\"\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "batch envelope wraps pre-serialized items verbatim") {
+    const std::vector<std::string> items = {R"({"name":"a"})", R"({"name":"b"})"};
+    CHECK_EQ(build_batch_envelope("2026-06-11T00:00:00.000Z", items),
+             std::string{R"({"sentAtIso":"2026-06-11T00:00:00.000Z",)"
+                         R"("items":[{"name":"a"},{"name":"b"}]})"});
+}
+
+TEST_CASE("payloads", "batch envelope with no items is an empty array") {
+    CHECK_EQ(build_batch_envelope("2026-06-11T00:00:00.000Z", {}),
+             std::string{R"({"sentAtIso":"2026-06-11T00:00:00.000Z","items":[]})"});
 }
 
 TEST_CASE("payloads", "event stamps correlation dimensions after attributes") {

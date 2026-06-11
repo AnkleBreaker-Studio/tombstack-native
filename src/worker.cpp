@@ -64,6 +64,15 @@ void Worker::stop() {
     persist_leftovers();
 }
 
+void Worker::set_batch_drainer(std::function<void()> drainer) {
+    batch_drainer_ = std::move(drainer);  // set before start(); no concurrent access yet
+}
+
+void Worker::wake() {
+    wake_requested_.store(true);
+    cv_.notify_all();
+}
+
 void Worker::enqueue(UploadJob job) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -85,11 +94,16 @@ bool Worker::flush(std::chrono::milliseconds timeout) {
 
 void Worker::run() {
     for (;;) {
+        if (batch_drainer_) {
+            // Off the caller's thread: flush count/age-ready batches (spec
+            // section 16). Runs unlocked because draining enqueues new jobs.
+            batch_drainer_();
+        }
         UploadJob job;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait_until(lock, next_wakeup(), [this] {
-                if (!running_) {
+                if (!running_ || wake_requested_.load()) {
                     return true;
                 }
                 const auto now = std::chrono::steady_clock::now();
@@ -103,6 +117,7 @@ void Worker::run() {
             if (!running_) {
                 return;
             }
+            wake_requested_.store(false);
             const auto now = std::chrono::steady_clock::now();
             if (now >= next_log_flush_) {
                 next_log_flush_ = now + log_flush_interval;
@@ -141,6 +156,13 @@ std::chrono::steady_clock::time_point Worker::next_wakeup() const {
     for (const UploadJob &queued : queue_) {
         if (queued.not_before < wakeup) {
             wakeup = queued.not_before;
+        }
+    }
+    if (batch_drainer_) {
+        // Bound the idle wait so the age trigger is evaluated within ~1s.
+        const auto batch_deadline = std::chrono::steady_clock::now() + batch_check_interval;
+        if (batch_deadline < wakeup) {
+            wakeup = batch_deadline;
         }
     }
     return wakeup;
@@ -225,8 +247,10 @@ void Worker::retry_or_give_up(UploadJob &job) {
         return;
     }
     // Final in-session failure: make sure durable payloads survive to the next
-    // launch (write-ahead jobs already have a backing file).
-    if (!job.is_log_put && job.sidecar_path.empty() &&
+    // launch (write-ahead jobs already have a backing file). Batch envelopes are
+    // not single-item sidecars (the uploader posts those to the non-batch
+    // endpoint), so they are dropped fail-soft instead of mis-persisted.
+    if (!job.is_log_put && !job.no_persist && job.sidecar_path.empty() &&
         job.durability != Durability::ephemeral) {
         sidecars_.write(job.kind, job.body);
     }
@@ -239,7 +263,7 @@ void Worker::persist_leftovers() {
         leftovers.swap(queue_);
     }
     for (const UploadJob &job : leftovers) {
-        if (!job.is_log_put && job.sidecar_path.empty() &&
+        if (!job.is_log_put && !job.no_persist && job.sidecar_path.empty() &&
             job.durability != Durability::ephemeral) {
             sidecars_.write(job.kind, job.body);
         }

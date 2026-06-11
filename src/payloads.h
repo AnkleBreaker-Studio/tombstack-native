@@ -36,6 +36,8 @@ constexpr std::size_t session_id = 64;
 constexpr std::size_t role = 16;       // enum "client"/"server"; never emitted empty
 constexpr std::size_t server_id = 128;
 constexpr std::size_t match_id = 128;
+constexpr std::size_t metric_name = 64;
+constexpr std::size_t metric_unit = 16; // short label e.g. "ms"/"fps"/"hz"
 }  // namespace limits
 
 struct CrashPayload {
@@ -88,6 +90,21 @@ struct EventPayload {
     std::string session_id; // empty -> omitted
 };
 
+struct MetricPayload {
+    std::string name;        // required (min 1)
+    double value{0.0};       // finite (guarded at the API boundary); a JSON number
+    std::string unit;        // empty -> omitted
+    std::string occurred_at_iso;
+    std::string build_version;
+    std::string os;
+    std::string arch;
+    std::string user_id;     // empty -> omitted
+    std::string role;        // "client"/"server"; empty -> omitted
+    std::string server_id;   // empty -> omitted
+    std::string match_id;    // empty -> omitted
+    std::string session_id;  // empty -> omitted
+};
+
 struct HeartbeatPayload {
     std::string session_id;
     std::string occurred_at_iso;
@@ -101,6 +118,16 @@ std::string build_crash_json(const CrashPayload &payload);
 std::string build_bug_report_json(const BugReportPayload &payload);
 std::string build_event_json(const EventPayload &payload);
 std::string build_heartbeat_json(const HeartbeatPayload &payload);
+
+/** One metric item body (mirrors the server metricSchema; `value` is a JSON
+ *  number, empty optionals omitted). Used both for the single-metric endpoint
+ *  and as an item inside a metrics batch. */
+std::string build_metric_json(const MetricPayload &payload);
+
+/** Transport envelope for a batch POST: `{"sentAtIso":...,"items":[<item>,...]}`.
+ *  `items` are already-serialized object bodies, spliced in verbatim. */
+std::string build_batch_envelope(const std::string &sent_at_iso,
+                                 const std::vector<std::string> &items);
 
 }  // namespace tombstone
 

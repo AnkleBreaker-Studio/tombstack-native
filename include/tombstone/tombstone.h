@@ -184,6 +184,18 @@ TOMBSTONE_API tombstone_result tombstone_track_event(const char *name,
                                                      size_t count);
 
 /**
+ * Record a numeric metric sample (e.g. tick rate, RTT, memory use). Batched
+ * client-side and flushed on count/age/quit/pre-crash like analytics events;
+ * each sample carries its own occurredAtIso plus the cached correlation
+ * context (role/serverId/matchId/sessionId). `value` must be finite (NaN /
+ * Infinity is dropped). `unit` is an optional short label (e.g. "ms", "fps",
+ * "hz"); NULL or "" omits it. `h` is the reserved opaque handle; pass NULL.
+ * Fail-soft: a no-op before init or while consent is off.
+ */
+TOMBSTONE_API void tombstone_track_metric(tombstone_handle *h, const char *name, double value,
+                                          const char *unit);
+
+/**
  * Report a crash. `signature` groups occurrences (clamped to 128 chars); pass
  * NULL to derive a stable signature from stack_hint + stack_trace. stack_hint
  * is the one-line summary (clamped to 512; NULL becomes "Crash"); stack_trace

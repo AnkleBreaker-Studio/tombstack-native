@@ -21,6 +21,8 @@ constexpr const char *crashes_path = "/api/v1/ingest/crashes";
 constexpr const char *bug_reports_path = "/api/v1/ingest/bug-reports";
 constexpr const char *events_path = "/api/v1/ingest/events";
 constexpr const char *heartbeats_path = "/api/v1/ingest/heartbeats";
+constexpr const char *events_batch_path = "/api/v1/ingest/events:batch";
+constexpr const char *metrics_batch_path = "/api/v1/ingest/metrics:batch";
 
 constexpr int min_heartbeat_interval_s = 15;
 constexpr int max_heartbeat_interval_s = 600;
@@ -74,6 +76,10 @@ Client::~Client() {
             session_log_.flush_now();
         }
         if (worker_) {
+            // Quit flush (spec section 16): drain buffered events/metrics and
+            // give the worker a bounded window to deliver before we tear down.
+            flush_all_batches();
+            worker_->flush(std::chrono::milliseconds{2000});
             worker_->stop();  // persists durable leftovers as sidecars
         }
         if (storage_available_) {
@@ -116,6 +122,7 @@ tombstone_result Client::init(const tombstone_options &options) {
 
     transport_ = std::make_unique<Transport>(sdk_log_);
     worker_ = std::make_unique<Worker>(*transport_, sidecars_, session_log_, sdk_log_, token_);
+    worker_->set_batch_drainer([this] { drain_ready_batches(); });
     worker_->start();
 
     initialized_ = true;
@@ -320,8 +327,38 @@ tombstone_result Client::flush(int timeout_ms) {
     if (session_log_enabled_ && storage_available_) {
         session_log_.flush_now();
     }
+    flush_all_batches();  // buffered events/metrics join the outbound queue
     const auto timeout = std::chrono::milliseconds{timeout_ms > 0 ? timeout_ms : 0};
     return worker_->flush(timeout) ? TOMBSTONE_OK : TOMBSTONE_ERROR_TIMEOUT;
+}
+
+void Client::maybe_flush_batch(Batch &batch, const char *path,
+                               std::chrono::steady_clock::time_point now, bool force) {
+    if (!batch.has_items()) {
+        return;  // cheap short-circuit: an empty idle loop allocates nothing (section 15)
+    }
+    std::optional<std::string> envelope = batch.drain_if_ready(now_iso8601_utc_ms(), now, force);
+    if (!envelope.has_value()) {
+        return;
+    }
+    UploadJob job;
+    job.url = endpoint_ + path;
+    job.body = std::move(*envelope);
+    job.durability = Durability::persist_on_failure;  // retried with backoff in-session
+    job.no_persist = true;  // a batch envelope is not a single-item sidecar
+    worker_->enqueue(std::move(job));
+}
+
+void Client::drain_ready_batches() {
+    const auto now = std::chrono::steady_clock::now();
+    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/false);
+    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/false);
+}
+
+void Client::flush_all_batches() {
+    const auto now = std::chrono::steady_clock::now();
+    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/true);
+    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/true);
 }
 
 }  // namespace tombstone

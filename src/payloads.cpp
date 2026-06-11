@@ -115,6 +115,36 @@ std::string build_event_json(const EventPayload &payload) {
     return json.str();
 }
 
+std::string build_metric_json(const MetricPayload &payload) {
+    JsonWriter json;
+    json.begin_object();
+    clamped_field(json, "name", payload.name, limits::metric_name);
+    json.number_field("value", payload.value);
+    optional_field(json, "unit", payload.unit, limits::metric_unit);
+    json.string_field("occurredAtIso", payload.occurred_at_iso);
+    clamped_field(json, "buildVersion", payload.build_version, limits::build_version);
+    json.string_field("os", payload.os);
+    json.string_field("arch", payload.arch);
+    optional_field(json, "userId", payload.user_id, limits::user_id);
+    correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
+    json.end_object();
+    return json.str();
+}
+
+std::string build_batch_envelope(const std::string &sent_at_iso,
+                                 const std::vector<std::string> &items) {
+    JsonWriter json;
+    json.begin_object();
+    json.string_field("sentAtIso", sent_at_iso);
+    json.begin_array("items");
+    for (const std::string &item : items) {
+        json.raw_element(item);
+    }
+    json.end_array();
+    json.end_object();
+    return json.str();
+}
+
 std::string build_heartbeat_json(const HeartbeatPayload &payload) {
     JsonWriter json;
     json.begin_object();
