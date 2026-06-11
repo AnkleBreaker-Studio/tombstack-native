@@ -101,7 +101,13 @@ void Worker::run() {
         if (batch_drainer_) {
             // Off the caller's thread: flush count/age-ready batches (spec
             // section 16). Runs unlocked because draining enqueues new jobs.
-            batch_drainer_();
+            // Fail-soft like process(): an exception escaping the thread entry
+            // would call std::terminate and crash the host — never acceptable.
+            try {
+                batch_drainer_();
+            } catch (...) {
+                sdk_log_.warn("batch drain failed");
+            }
         }
         UploadJob job;
         {

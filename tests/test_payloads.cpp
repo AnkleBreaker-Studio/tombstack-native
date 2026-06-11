@@ -144,24 +144,46 @@ TEST_CASE("payloads", "event caps attributes at 32 entries") {
     CHECK(json.find("\"k32\"") == std::string::npos);
 }
 
-TEST_CASE("payloads", "heartbeat is byte exact with and without userId") {
+TEST_CASE("payloads", "heartbeat stamps correlation and omits empty dimensions") {
+    // A server-actor heartbeat carries role/serverId/matchId so the server can
+    // register the Fleet server and honor match/server log-pulls.
     HeartbeatPayload payload;
     payload.session_id = "a1b2c3d4";
     payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
     payload.build_version = "1.0.0";
     payload.os = "windows";
     payload.arch = "x86";
-    CHECK_EQ(build_heartbeat_json(payload),
-             std::string{R"({"sessionId":"a1b2c3d4",)"
-                         R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
-                         R"("buildVersion":"1.0.0","os":"windows","arch":"x86"})"});
-
     payload.user_id = "player-7";
+    payload.role = "server";
+    payload.server_id = "srv-eu-1";
+    payload.match_id = "m-42";
     CHECK_EQ(build_heartbeat_json(payload),
              std::string{R"({"sessionId":"a1b2c3d4",)"
                          R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
                          R"("buildVersion":"1.0.0","os":"windows","arch":"x86",)"
-                         R"("userId":"player-7"})"});
+                         R"("userId":"player-7","role":"server",)"
+                         R"("serverId":"srv-eu-1","matchId":"m-42"})"});
+
+    // A plain client heartbeat: role is present ("client") but serverId/matchId
+    // are omitted when empty (never an empty-string enum), and userId is omitted
+    // for an anonymous client.
+    HeartbeatPayload client_beat;
+    client_beat.session_id = "a1b2c3d4";
+    client_beat.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    client_beat.build_version = "1.0.0";
+    client_beat.os = "windows";
+    client_beat.arch = "x86";
+    client_beat.role = "client";
+    const std::string client_json = build_heartbeat_json(client_beat);
+    CHECK_EQ(client_json,
+             std::string{R"({"sessionId":"a1b2c3d4",)"
+                         R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x86",)"
+                         R"("role":"client"})"});
+    CHECK(client_json.find("\"serverId\"") == std::string::npos);
+    CHECK(client_json.find("\"matchId\"") == std::string::npos);
+    CHECK(client_json.find("\"userId\"") == std::string::npos);
+    CHECK(client_json.find("\"\"") == std::string::npos);
 }
 
 TEST_CASE("payloads", "crash stamps correlation dimensions and omits empty ones") {

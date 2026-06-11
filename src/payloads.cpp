@@ -154,6 +154,13 @@ std::string build_heartbeat_json(const HeartbeatPayload &payload) {
     json.string_field("os", payload.os);
     json.string_field("arch", payload.arch);
     optional_field(json, "userId", payload.user_id, limits::user_id);
+    // serverContextFields: role/serverId/matchId (the server registers Fleet
+    // servers and selects pull requests from these). sessionId is already a
+    // required top-level field above, so it is not part of this subset. Each is
+    // omitted when empty (never an empty-string enum), matching cleanOptionalId.
+    optional_field(json, "role", payload.role, limits::role);
+    optional_field(json, "serverId", payload.server_id, limits::server_id);
+    optional_field(json, "matchId", payload.match_id, limits::match_id);
     json.end_object();
     return json.str();
 }

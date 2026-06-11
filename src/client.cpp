@@ -247,6 +247,13 @@ void Client::heartbeat_loop() {
                 payload.os = os_;
                 payload.arch = arch_;
                 payload.user_id = current_user_id();
+                // role/serverId/matchId let the server register Fleet servers and
+                // honor match/server log-pulls. role is always present: default to
+                // "client" until a match marks this actor a "server".
+                const MatchContext ctx = current_match_context();
+                payload.role = ctx.role.empty() ? std::string{"client"} : ctx.role;
+                payload.server_id = ctx.server_id;
+                payload.match_id = ctx.match_id;
                 UploadJob job;
                 job.url = endpoint_ + heartbeats_path;
                 job.body = build_heartbeat_json(payload);

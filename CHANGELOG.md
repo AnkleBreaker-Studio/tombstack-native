@@ -2,6 +2,26 @@
 
 All notable changes to the Tombstone Native SDK.
 
+## [0.4.1] - 2026-06-11
+
+### Fixed
+
+- **Heartbeat correlation (HIGH)** — heartbeats now carry `role`/`serverId`/`matchId`
+  (the `serverContextFields` subset of the server `heartbeatSchema`). Without them the
+  server could not register native dedicated servers in the Fleet registry, and
+  match/server-targeted log-pulls were never honored for native actors. `role` is always
+  present (`"client"` by default, `"server"` once a match starts); `serverId`/`matchId`
+  are omitted when empty (never an empty-string enum), populated from the mutex-guarded
+  cached match context.
+- **Worker batch drainer fail-soft (HIGH)** — the `batch_drainer_()` call in the worker
+  `run()` loop is now wrapped in `try/catch (...)`, matching the existing `process()`
+  pattern. An exception escaping the worker thread entry would call `std::terminate` and
+  crash the host; the SDK must never crash the host.
+- **Pre-crash batch flush (MEDIUM)** — `report_crash` now calls `flush_all_batches()`
+  before enqueuing the crash ingest (mirrors Unity's `FlushBatches()` in
+  `captureException`), so buffered events/metrics are delivered on a fatal crash path
+  instead of being lost in memory.
+
 ## [0.4.0] - 2026-06-11
 
 ### Added

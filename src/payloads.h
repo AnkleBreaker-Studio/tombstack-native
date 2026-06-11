@@ -115,7 +115,10 @@ struct HeartbeatPayload {
     std::string build_version;
     std::string os;
     std::string arch;
-    std::string user_id; // empty -> omitted
+    std::string user_id;   // empty -> omitted
+    std::string role;      // "client"/"server"; empty -> omitted
+    std::string server_id; // empty -> omitted
+    std::string match_id;  // empty -> omitted
 };
 
 std::string build_crash_json(const CrashPayload &payload);

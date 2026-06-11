@@ -219,6 +219,10 @@ tombstone_result Client::report_crash(const char *signature, const char *stack_h
     payload.server_id = crash_ctx.server_id;
     payload.match_id = crash_ctx.match_id;
     payload.session_id = session_id_;
+    // Pre-flush buffered events/metrics onto the outbound queue BEFORE enqueuing
+    // the crash (mirrors Unity's FlushBatches() in captureException): on a fatal
+    // crash the final batch must still be delivered, not lost in memory.
+    flush_all_batches();
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
                    SidecarKind::crash, want_log, /*log_from_previous=*/false);
     // Final flush in the crash path: the on-disk log must include this crash

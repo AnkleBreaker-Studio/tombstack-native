@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr const char *sdk_version = "0.4.0";
+constexpr const char *sdk_version = "0.4.1";
 
 // The process-wide client. Entry points snapshot the shared_ptr under the
 // mutex and call outside it, so a long flush() neither blocks other calls nor
