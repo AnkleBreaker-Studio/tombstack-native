@@ -227,6 +227,29 @@ TOMBSTONE_API tombstone_result tombstone_report_bug(const char *category,
 TOMBSTONE_API tombstone_result tombstone_log_line(tombstone_level level, const char *line);
 
 /**
+ * Server-side: queue a log pull for a player / session / match / whole server.
+ * `target_type` is one of "userId" | "sessionId" | "matchId" | "server"
+ * (clamped to 32 chars); `target_value` is the corresponding id (clamped to
+ * 128); `reason` is the audit note (clamped to 280). Requires a WRITE-scoped
+ * server token — an ingest-only client token is rejected server-side (the 403
+ * is logged via the diagnostics callback, never fatal). The pull is queued; the
+ * targeted client(s) upload on their next heartbeat (consent-gated). Fail-silent:
+ * a no-op before init or on a NULL/empty argument. `h` is the reserved opaque
+ * handle; pass NULL.
+ */
+TOMBSTONE_API void tombstone_request_player_logs(tombstone_handle *h, const char *target_type,
+                                                 const char *target_value, const char *reason);
+
+/**
+ * Server-side convenience: auto-pull a player's logs after an anomalous
+ * disconnect. Equivalent to tombstone_request_player_logs(h, "userId", user_id,
+ * reason); a NULL/empty `reason` defaults to "anomalous disconnect". `h` is the
+ * reserved opaque handle; pass NULL. Fail-silent.
+ */
+TOMBSTONE_API void tombstone_on_anomalous_disconnect(tombstone_handle *h, const char *user_id,
+                                                     const char *reason);
+
+/**
  * Block until the outbound queue is drained (delivered, persisted offline, or
  * dropped as poison) or `timeout_ms` elapses. Returns TOMBSTONE_ERROR_TIMEOUT
  * when work remains. timeout_ms <= 0 means "do not wait, just report".

@@ -158,4 +158,48 @@ std::string build_heartbeat_json(const HeartbeatPayload &payload) {
     return json.str();
 }
 
+std::string build_pull_request_json(std::string_view target_type, std::string_view target_value,
+                                    std::string_view reason) {
+    JsonWriter json;
+    json.begin_object();
+    clamped_field(json, "targetType", target_type, limits::pull_target_type);
+    clamped_field(json, "targetValue", target_value, limits::pull_target_value);
+    clamped_field(json, "reason", reason, limits::pull_reason);
+    json.end_object();
+    return json.str();
+}
+
+std::string build_pull_fulfill_json(const std::string &user_id, const std::string &session_id,
+                                    const std::string &match_id, const std::string &server_id) {
+    JsonWriter json;
+    json.begin_object();
+    optional_field(json, "userId", user_id, limits::user_id);
+    optional_field(json, "sessionId", session_id, limits::session_id);
+    optional_field(json, "matchId", match_id, limits::match_id);
+    optional_field(json, "serverId", server_id, limits::server_id);
+    json.end_object();
+    return json.str();
+}
+
+bool pull_request_targets_client(std::string_view target_type, std::string_view target_value,
+                                 std::string_view user_id, std::string_view session_id,
+                                 std::string_view match_id, std::string_view server_id) {
+    if (target_value.empty()) {
+        return false;
+    }
+    if (target_type == "userId") {
+        return !user_id.empty() && user_id == target_value;
+    }
+    if (target_type == "sessionId") {
+        return !session_id.empty() && session_id == target_value;
+    }
+    if (target_type == "matchId") {
+        return !match_id.empty() && match_id == target_value;
+    }
+    if (target_type == "server") {
+        return !server_id.empty() && server_id == target_value;
+    }
+    return false;
+}
+
 }  // namespace tombstone

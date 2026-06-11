@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,9 @@ constexpr std::size_t server_id = 128;
 constexpr std::size_t match_id = 128;
 constexpr std::size_t metric_name = 64;
 constexpr std::size_t metric_unit = 16; // short label e.g. "ms"/"fps"/"hz"
+constexpr std::size_t pull_target_type = 32;  // enum "userId"/"sessionId"/"matchId"/"server"
+constexpr std::size_t pull_target_value = 128;
+constexpr std::size_t pull_reason = 280;      // server MAX_PULL_REASON
 }  // namespace limits
 
 struct CrashPayload {
@@ -128,6 +132,36 @@ std::string build_metric_json(const MetricPayload &payload);
  *  `items` are already-serialized object bodies, spliced in verbatim. */
 std::string build_batch_envelope(const std::string &sent_at_iso,
                                  const std::vector<std::string> &items);
+
+/**
+ * Body for `POST /api/v1/pull-requests` (the server-side log-pull trigger).
+ * Mirrors the server `pullRequestCreateSchema` exactly: `{ targetType,
+ * targetValue, reason }`, all required, clamped to the schema maxima. `targetType`
+ * is one of "userId"/"sessionId"/"matchId"/"server".
+ */
+std::string build_pull_request_json(std::string_view target_type, std::string_view target_value,
+                                    std::string_view reason);
+
+/**
+ * Body for `POST /api/v1/pull-requests/{requestId}/fulfill` — the client's asserted
+ * correlation identity. Mirrors the server `pullFulfillSchema`: every field is
+ * optional and an empty value is OMITTED (never serialized as ""), field order
+ * userId/sessionId/matchId/serverId.
+ */
+std::string build_pull_fulfill_json(const std::string &user_id, const std::string &session_id,
+                                    const std::string &match_id, const std::string &server_id);
+
+/**
+ * Pure: does a queued pull request target THIS client? Mirror of the server's
+ * `heartbeatMatchesRequest` so a client uploads only when genuinely targeted (and
+ * only ever its OWN log). `server` matches the client's serverId (fan-out to
+ * everyone on the box); userId/sessionId/matchId match the client's own values.
+ * An empty target value, an unknown target type, or an empty asserted value never
+ * matches (an anonymous client is not pulled by a userId request).
+ */
+bool pull_request_targets_client(std::string_view target_type, std::string_view target_value,
+                                 std::string_view user_id, std::string_view session_id,
+                                 std::string_view match_id, std::string_view server_id);
 
 }  // namespace tombstone
 

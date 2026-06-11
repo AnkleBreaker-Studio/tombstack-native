@@ -68,6 +68,10 @@ void Worker::set_batch_drainer(std::function<void()> drainer) {
     batch_drainer_ = std::move(drainer);  // set before start(); no concurrent access yet
 }
 
+void Worker::set_ack_handler(std::function<void(const std::string &)> handler) {
+    ack_handler_ = std::move(handler);  // set before start(); no concurrent access yet
+}
+
 void Worker::wake() {
     wake_requested_.store(true);
     cv_.notify_all();
@@ -200,6 +204,11 @@ void Worker::handle_post_result(UploadJob &job, bool transport_error, long statu
         sidecars_.remove(job.sidecar_path);
         if (job.request_log) {
             schedule_log_put(job, response_body);
+        }
+        if (job.parse_ack && ack_handler_) {
+            // Heartbeat command channel: hand the 2xx body to the client, which
+            // enqueues a fulfil POST for each pull request targeting it.
+            ack_handler_(response_body);
         }
         return;
     case Outcome::poison:

@@ -61,6 +61,8 @@ public:
                                   const char *stack_trace, bool attach_log);
     tombstone_result report_bug(const char *category, const char *message, bool attach_log);
     tombstone_result log_line(tombstone_level level, const char *line);
+    tombstone_result request_player_logs(const char *target_type, const char *target_value,
+                                         const char *reason);
     tombstone_result flush(int timeout_ms);
 
 private:
@@ -71,6 +73,9 @@ private:
     void report_unclean_shutdown(const SessionMarkerData &previous);
     void heartbeat_loop();
     void stop_heartbeat();
+    /** Worker-thread hook: parse a heartbeat ack and fulfil pull requests
+     *  targeting this client (consent-gated, fail-soft). */
+    void handle_heartbeat_ack(const std::string &response_body);
 
     // --- capture helpers (client_reports.cpp) ---
     bool capture_allowed() const noexcept { return initialized_ && consent_; }

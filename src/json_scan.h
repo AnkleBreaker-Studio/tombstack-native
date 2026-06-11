@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace tombstone {
 
@@ -30,6 +31,22 @@ std::optional<bool> find_bool_field(std::string_view json, std::string_view key)
  * granted no slot (the `logUpload` field is optional in the envelope).
  */
 std::optional<std::string> find_log_upload_url(std::string_view response_body);
+
+/** One pending log-pull request as read from the heartbeat ack command channel. */
+struct PendingPullRequest {
+    std::string request_id;
+    std::string target_type;  // userId | sessionId | matchId | server
+    std::string target_value;
+};
+
+/**
+ * Pull requests targeting this client, read from the heartbeat 202 ack's
+ * `data.pendingRequests` array. Each element's `requestId` / `targetType` /
+ * `targetValue` strings are extracted; the result is bounded (a runaway list is
+ * truncated). Returns empty when the array is absent, empty, or malformed —
+ * never throws.
+ */
+std::vector<PendingPullRequest> find_pending_requests(std::string_view response_body);
 
 }  // namespace tombstone
 

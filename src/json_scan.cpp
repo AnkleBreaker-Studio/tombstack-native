@@ -184,4 +184,58 @@ std::optional<std::string> find_log_upload_url(std::string_view response_body) {
     return find_string_field(response_body.substr(at, end - at), "url");
 }
 
+std::vector<PendingPullRequest> find_pending_requests(std::string_view response_body) {
+    std::vector<PendingPullRequest> out;
+    const std::size_t at = find_value_start(response_body, "pendingRequests");
+    if (at == std::string_view::npos || at >= response_body.size() || response_body[at] != '[') {
+        return out;
+    }
+    // Walk the array, isolating each top-level object so per-object scalar scans
+    // (find_string_field) cannot bleed into a sibling. Bounded — a malformed or
+    // oversized list is truncated rather than trusted.
+    constexpr std::size_t max_requests = 32;
+    std::size_t depth = 0;
+    bool in_string = false;
+    std::size_t object_start = std::string_view::npos;
+    for (std::size_t i = at; i < response_body.size(); ++i) {
+        const char c = response_body[i];
+        if (in_string) {
+            if (c == '\\') {
+                ++i;  // skip the escaped char
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+        } else if (c == '{') {
+            if (depth == 0) {
+                object_start = i;
+            }
+            ++depth;
+        } else if (c == '}') {
+            if (depth > 0) {
+                --depth;
+                if (depth == 0 && object_start != std::string_view::npos) {
+                    const std::string_view object =
+                        response_body.substr(object_start, i - object_start + 1);
+                    PendingPullRequest request;
+                    request.request_id = find_string_field(object, "requestId").value_or("");
+                    request.target_type = find_string_field(object, "targetType").value_or("");
+                    request.target_value = find_string_field(object, "targetValue").value_or("");
+                    out.push_back(std::move(request));
+                    object_start = std::string_view::npos;
+                    if (out.size() >= max_requests) {
+                        break;
+                    }
+                }
+            }
+        } else if (c == ']' && depth == 0) {
+            break;  // end of the pendingRequests array
+        }
+    }
+    return out;
+}
+
 }  // namespace tombstone

@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr const char *sdk_version = "0.3.0";
+constexpr const char *sdk_version = "0.4.0";
 
 // The process-wide client. Entry points snapshot the shared_ptr under the
 // mutex and call outside it, so a long flush() neither blocks other calls nor
@@ -160,6 +160,22 @@ tombstone_result tombstone_report_bug(const char *category, const char *message,
 
 tombstone_result tombstone_log_line(tombstone_level level, const char *line) {
     return with_client([&](tombstone::Client &client) { return client.log_line(level, line); });
+}
+
+void tombstone_request_player_logs(tombstone_handle * /*handle*/, const char *target_type,
+                                   const char *target_value, const char *reason) {
+    (void)with_client([&](tombstone::Client &client) {
+        return client.request_player_logs(target_type, target_value, reason);
+    });
+}
+
+void tombstone_on_anomalous_disconnect(tombstone_handle * /*handle*/, const char *user_id,
+                                       const char *reason) {
+    (void)with_client([&](tombstone::Client &client) {
+        const char *effective_reason =
+            (reason != nullptr && reason[0] != '\0') ? reason : "anomalous disconnect";
+        return client.request_player_logs("userId", user_id, effective_reason);
+    });
 }
 
 tombstone_result tombstone_flush(int timeout_ms) {

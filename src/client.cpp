@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <random>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -23,6 +24,7 @@ constexpr const char *events_path = "/api/v1/ingest/events";
 constexpr const char *heartbeats_path = "/api/v1/ingest/heartbeats";
 constexpr const char *events_batch_path = "/api/v1/ingest/events:batch";
 constexpr const char *metrics_batch_path = "/api/v1/ingest/metrics:batch";
+constexpr const char *pull_requests_path = "/api/v1/pull-requests";
 
 constexpr int min_heartbeat_interval_s = 15;
 constexpr int max_heartbeat_interval_s = 600;
@@ -123,6 +125,7 @@ tombstone_result Client::init(const tombstone_options &options) {
     transport_ = std::make_unique<Transport>(sdk_log_);
     worker_ = std::make_unique<Worker>(*transport_, sidecars_, session_log_, sdk_log_, token_);
     worker_->set_batch_drainer([this] { drain_ready_batches(); });
+    worker_->set_ack_handler([this](const std::string &body) { handle_heartbeat_ack(body); });
     worker_->start();
 
     initialized_ = true;
@@ -248,6 +251,7 @@ void Client::heartbeat_loop() {
                 job.url = endpoint_ + heartbeats_path;
                 job.body = build_heartbeat_json(payload);
                 job.durability = Durability::ephemeral;  // a missed beat is stale data
+                job.parse_ack = true;  // the 202 ack may carry pull requests for us
                 worker_->enqueue(std::move(job));
             } catch (const std::exception &e) {
                 sdk_log_.warn(std::string{"heartbeat build failed: "} + e.what());
@@ -265,6 +269,48 @@ void Client::stop_heartbeat() {
     heartbeat_cv_.notify_all();
     if (heartbeat_thread_.joinable()) {
         heartbeat_thread_.join();
+    }
+}
+
+/**
+ * Heartbeat command channel: for each pending pull request in the ack that
+ * targets THIS client (by userId/sessionId/matchId/serverId) — and only while
+ * consent is granted — POST a fulfilment that asks the server to presign a log
+ * slot, with request_log set so the existing logUpload chase PUTs the current
+ * session log off-thread (spec section 15). Runs on the worker thread; fail-soft
+ * throughout — a non-targeted or non-consented client uploads nothing.
+ */
+void Client::handle_heartbeat_ack(const std::string &response_body) {
+    try {
+        if (!capture_allowed() || response_body.empty()) {
+            return;
+        }
+        const std::vector<PendingPullRequest> pending = find_pending_requests(response_body);
+        if (pending.empty()) {
+            return;
+        }
+        const std::string user_id = current_user_id();
+        const MatchContext ctx = current_match_context();
+        for (const PendingPullRequest &request : pending) {
+            if (request.request_id.empty()) {
+                continue;
+            }
+            if (!pull_request_targets_client(request.target_type, request.target_value, user_id,
+                                             session_id_, ctx.match_id, ctx.server_id)) {
+                continue;
+            }
+            UploadJob job;
+            job.url = endpoint_ + pull_requests_path + "/" + request.request_id + "/fulfill";
+            job.body = build_pull_fulfill_json(user_id, session_id_, ctx.match_id, ctx.server_id);
+            job.durability = Durability::persist_on_failure;  // retried in-session with backoff
+            job.request_log = true;  // chase data.logUpload -> PUT the current session log
+            job.no_persist = true;   // the presign is time-sensitive; never sidecar across launches
+            worker_->enqueue(std::move(job));
+        }
+    } catch (const std::exception &e) {
+        sdk_log_.warn(std::string{"heartbeat ack handling failed: "} + e.what());
+    } catch (...) {
+        sdk_log_.warn("heartbeat ack handling failed (unknown error)");
     }
 }
 

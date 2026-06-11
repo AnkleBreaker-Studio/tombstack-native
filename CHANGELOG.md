@@ -2,6 +2,41 @@
 
 All notable changes to the Tombstone Native SDK.
 
+## [0.4.0] - 2026-06-11
+
+### Added
+
+- **Log-pull control plane** — two new C ABI calls:
+  `tombstone_request_player_logs(handle, target_type, target_value, reason)`
+  queues a server-side log pull, and
+  `tombstone_on_anomalous_disconnect(handle, user_id, reason)` is the
+  auto-pull-after-weird-disconnect convenience (forwards with
+  `target_type="userId"`, defaulting `reason` to "anomalous disconnect"). Both go
+  through the no-throw `with_client` wrapper and POST the create body
+  `{ targetType, targetValue, reason }` (mirrors the server
+  `pullRequestCreateSchema`, clamped 32/128/280) to `/api/v1/pull-requests` with
+  the client token. The endpoint is WRITE-scoped server-side; a 403 for an
+  ingest-only token is classified as poison and logged via the diagnostics
+  callback — never fatal.
+- **Heartbeat-ack honouring (client command channel)** — the heartbeat 202 ack
+  now carries `data.pendingRequests`. The worker hands the 2xx body to the client
+  via a new ack handler; the client parses `pendingRequests` (extended
+  `json_scan` with `find_pending_requests`) and, for each request that targets
+  THIS client (by userId/sessionId/matchId/serverId, matched by the pure
+  `pull_request_targets_client` — a mirror of the server `heartbeatMatchesRequest`)
+  AND only while consent is granted, POSTs
+  `/api/v1/pull-requests/{requestId}/fulfill` with its asserted identity
+  (`build_pull_fulfill_json`, empty dimensions omitted). The fulfil sets the
+  request-log flag so the existing presigned-log chase uploads the current
+  rolling session log off the worker thread; the time-sensitive fulfil is
+  retried in-session but never persisted across launches. Backward-safe: a
+  non-targeted or non-consented client uploads nothing, and the additive ack
+  fields are ignored by older builds.
+- Byte-exact builder + matcher unit tests (`build_pull_request_json`,
+  `build_pull_fulfill_json`, `pull_request_targets_client`) in
+  `tests/test_payloads.cpp` and ack-parse tests (`find_pending_requests`) in
+  `tests/test_json_scan.cpp`, both wired into the existing CTest suites.
+
 ## [0.3.0] - 2026-06-11
 
 ### Added

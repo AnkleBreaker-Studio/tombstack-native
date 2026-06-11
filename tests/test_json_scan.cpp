@@ -3,6 +3,7 @@
 
 using tombstone::find_bool_field;
 using tombstone::find_log_upload_url;
+using tombstone::find_pending_requests;
 using tombstone::find_string_field;
 
 namespace {
@@ -51,4 +52,28 @@ TEST_CASE("json_scan", "stays inside the logUpload object") {
     // "url" appears AFTER logUpload closes -> must not be picked up.
     const char *json = R"({"data":{"logUpload":{"key":"k"},"url":"https://outside"}})";
     CHECK(!find_log_upload_url(json).has_value());
+}
+
+TEST_CASE("json_scan", "parses the heartbeat-ack pending requests") {
+    const char *ack =
+        R"({"success":true,"data":{"accepted":true,"pendingRequests":[)"
+        R"({"requestId":"r1","targetType":"userId","targetValue":"player-7"},)"
+        R"({"requestId":"r2","targetType":"server","targetValue":"srv-eu-1"}]}})";
+    const auto pending = find_pending_requests(ack);
+    CHECK_EQ(pending.size(), static_cast<std::size_t>(2));
+    CHECK_EQ(pending[0].request_id, std::string{"r1"});
+    CHECK_EQ(pending[0].target_type, std::string{"userId"});
+    CHECK_EQ(pending[0].target_value, std::string{"player-7"});
+    CHECK_EQ(pending[1].request_id, std::string{"r2"});
+    CHECK_EQ(pending[1].target_type, std::string{"server"});
+    CHECK_EQ(pending[1].target_value, std::string{"srv-eu-1"});
+}
+
+TEST_CASE("json_scan", "returns no pending requests for an empty or absent array") {
+    CHECK_EQ(
+        find_pending_requests(R"({"success":true,"data":{"accepted":true,"pendingRequests":[]}})")
+            .size(),
+        static_cast<std::size_t>(0));
+    CHECK_EQ(find_pending_requests(R"({"success":true,"data":{"accepted":true}})").size(),
+             static_cast<std::size_t>(0));
 }

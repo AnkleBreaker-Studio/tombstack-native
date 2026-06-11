@@ -12,10 +12,13 @@ using tombstone::build_crash_json;
 using tombstone::build_event_json;
 using tombstone::build_heartbeat_json;
 using tombstone::build_metric_json;
+using tombstone::build_pull_fulfill_json;
+using tombstone::build_pull_request_json;
 using tombstone::CrashPayload;
 using tombstone::EventPayload;
 using tombstone::HeartbeatPayload;
 using tombstone::MetricPayload;
+using tombstone::pull_request_targets_client;
 
 TEST_CASE("payloads", "crash with every field is byte exact") {
     CrashPayload payload;
@@ -273,6 +276,44 @@ TEST_CASE("payloads", "batch envelope wraps pre-serialized items verbatim") {
 TEST_CASE("payloads", "batch envelope with no items is an empty array") {
     CHECK_EQ(build_batch_envelope("2026-06-11T00:00:00.000Z", {}),
              std::string{R"({"sentAtIso":"2026-06-11T00:00:00.000Z","items":[]})"});
+}
+
+TEST_CASE("payloads", "pull request body is byte exact") {
+    CHECK_EQ(build_pull_request_json("userId", "player-7", "anomalous disconnect"),
+             std::string{R"({"targetType":"userId","targetValue":"player-7",)"
+                         R"("reason":"anomalous disconnect"})"});
+}
+
+TEST_CASE("payloads", "pull request body clamps to the schema maxima") {
+    const std::string json =
+        build_pull_request_json("server", std::string(200, 'v'), std::string(400, 'r'));
+    CHECK(json.find('"' + std::string(128, 'v') + '"') != std::string::npos);
+    CHECK(json.find(std::string(129, 'v')) == std::string::npos);
+    CHECK(json.find('"' + std::string(280, 'r') + '"') != std::string::npos);
+    CHECK(json.find(std::string(281, 'r')) == std::string::npos);
+}
+
+TEST_CASE("payloads", "pull fulfill omits empty optionals") {
+    CHECK_EQ(build_pull_fulfill_json("player-7", "sess-9", "", ""),
+             std::string{R"({"userId":"player-7","sessionId":"sess-9"})"});
+    CHECK_EQ(build_pull_fulfill_json("u", "s", "m", "srv"),
+             std::string{R"({"userId":"u","sessionId":"s","matchId":"m","serverId":"srv"})"});
+    // An anonymous, context-free client posts an empty object (schema accepts {}).
+    CHECK_EQ(build_pull_fulfill_json("", "", "", ""), std::string{"{}"});
+}
+
+TEST_CASE("payloads", "pull target matcher mirrors the server heartbeatMatchesRequest") {
+    // Each dimension matches its own asserted value.
+    CHECK(pull_request_targets_client("userId", "u1", "u1", "s1", "m1", "srv1"));
+    CHECK(pull_request_targets_client("sessionId", "s1", "u1", "s1", "m1", "srv1"));
+    CHECK(pull_request_targets_client("matchId", "m1", "u1", "s1", "m1", "srv1"));
+    CHECK(pull_request_targets_client("server", "srv1", "u1", "s1", "m1", "srv1"));
+    // A different value, an anonymous client, an unknown type, and an empty
+    // target value all fail to match.
+    CHECK(!pull_request_targets_client("userId", "u2", "u1", "s1", "m1", "srv1"));
+    CHECK(!pull_request_targets_client("userId", "u1", "", "s1", "m1", "srv1"));
+    CHECK(!pull_request_targets_client("ip", "u1", "u1", "s1", "m1", "srv1"));
+    CHECK(!pull_request_targets_client("userId", "", "u1", "s1", "m1", "srv1"));
 }
 
 TEST_CASE("payloads", "event stamps correlation dimensions after attributes") {

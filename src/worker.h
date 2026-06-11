@@ -42,6 +42,7 @@ struct UploadJob {
     bool request_log{false};             // body carries "log":true -> chase the presign on 2xx
     bool log_from_previous{false};       // a granted presign uploads previous-session.log
     bool no_persist{false};              // batch envelopes: retry in-session, never sidecar'd
+    bool parse_ack{false};               // heartbeat: hand the 2xx body to the ack handler
     int attempt{0};
     std::chrono::steady_clock::time_point not_before{};
 };
@@ -89,6 +90,12 @@ public:
      *  semantics, it just gives them a thread to run on. */
     void set_batch_drainer(std::function<void()> drainer);
 
+    /** Install the heartbeat-ack handler, invoked off the caller's thread with
+     *  the 2xx response body of any job flagged `parse_ack` (the heartbeat). The
+     *  client parses pull requests and enqueues fulfilments. Must be set before
+     *  start() (single-threaded init); the worker owns no pull-request semantics. */
+    void set_ack_handler(std::function<void(const std::string &)> handler);
+
     /** Nudge the worker to run the batch drainer now (count trigger). */
     void wake();
 
@@ -120,6 +127,7 @@ private:
     std::atomic<bool> previous_log_claimed_{false};
     std::atomic<bool> wake_requested_{false};
     std::function<void()> batch_drainer_;  // set before start(); read on the worker thread
+    std::function<void(const std::string &)> ack_handler_;  // set before start(); worker thread
     std::chrono::steady_clock::time_point next_log_flush_{};
     std::thread thread_;
 };

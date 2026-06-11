@@ -15,6 +15,7 @@ namespace {
 
 constexpr const char *crashes_path = "/api/v1/ingest/crashes";
 constexpr const char *bug_reports_path = "/api/v1/ingest/bug-reports";
+constexpr const char *pull_requests_path = "/api/v1/pull-requests";
 
 const char *level_label(tombstone_level level) noexcept {
     switch (level) {
@@ -226,6 +227,26 @@ tombstone_result Client::report_crash(const char *signature, const char *stack_h
     if (want_log) {
         session_log_.flush_now();
     }
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::request_player_logs(const char *target_type, const char *target_value,
+                                             const char *reason) {
+    if (!initialized_) {
+        return TOMBSTONE_ERROR_NOT_INITIALIZED;
+    }
+    // A server-side operator action (not consent-gated like player capture): queue
+    // a log pull. All three fields are required by the server schema.
+    if (target_type == nullptr || target_type[0] == '\0' || target_value == nullptr ||
+        target_value[0] == '\0' || reason == nullptr || reason[0] == '\0') {
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+    }
+    UploadJob job;
+    job.url = endpoint_ + pull_requests_path;
+    job.body = build_pull_request_json(target_type, target_value, reason);
+    job.durability = Durability::persist_on_failure;  // retried in-session with backoff
+    job.no_persist = true;  // a control-plane POST is not a single-item ingest sidecar
+    worker_->enqueue(std::move(job));
     return TOMBSTONE_OK;
 }
 
