@@ -2,6 +2,8 @@
 
 #include "json_writer.h"
 
+#include <cmath>
+
 namespace tombstone {
 
 namespace {
@@ -55,7 +57,71 @@ void correlation_fields(JsonWriter &json, const std::string &role, const std::st
     optional_field(json, "sessionId", session_id, limits::session_id);
 }
 
+/** Emit an integer device dimension only when it carries information (> 0). */
+void optional_int_field(JsonWriter &json, std::string_view name, int value) {
+    if (value > 0) {
+        json.int_field(name, static_cast<long long>(value));
+    }
+}
+
+/** Emit a numeric device dimension only when finite and > 0 (0 means "unset"). */
+void optional_number_field(JsonWriter &json, std::string_view name, double value) {
+    if (std::isfinite(value) && value > 0.0) {
+        json.number_field(name, value);
+    }
+}
+
+/** The optional `device` object (crash/bug/heartbeat bodies). Fields appear in
+ *  server-schema order; every dimension is omitted when unset (empty string /
+ *  0 / false — the server cleans those anyway), and the whole object is
+ *  omitted when nothing is set, keeping a device-less body byte-identical to
+ *  the pre-device wire shape. */
+void device_object(JsonWriter &json, const DevicePayload &device) {
+    if (!device_has_content(device)) {
+        return;
+    }
+    json.begin_object("device");
+    optional_field(json, "model", device.model, limits::device_model);
+    optional_field(json, "type", device.type, limits::device_type);
+    optional_field(json, "os", device.os, limits::device_os);
+    optional_field(json, "osFamily", device.os_family, limits::device_os_family);
+    optional_field(json, "cpu", device.cpu, limits::device_cpu);
+    optional_int_field(json, "cpuCount", device.cpu_count);
+    optional_int_field(json, "ramMB", device.ram_mb);
+    optional_field(json, "gpu", device.gpu, limits::device_gpu);
+    optional_field(json, "gpuVendor", device.gpu_vendor, limits::device_gpu_vendor);
+    optional_field(json, "gpuVersion", device.gpu_version, limits::device_gpu_version);
+    optional_field(json, "gpuApi", device.gpu_api, limits::device_gpu_api);
+    optional_int_field(json, "vramMB", device.vram_mb);
+    optional_field(json, "screen", device.screen, limits::device_screen);
+    optional_number_field(json, "screenDpi", device.screen_dpi);
+    optional_number_field(json, "refreshRate", device.refresh_rate);
+    optional_field(json, "orientation", device.orientation, limits::device_orientation);
+    if (device.fullscreen) {
+        json.bool_field("fullscreen", true);
+    }
+    optional_field(json, "language", device.language, limits::device_language);
+    optional_field(json, "engine", device.engine, limits::device_engine);
+    optional_field(json, "scriptingBackend", device.scripting_backend,
+                   limits::device_scripting_backend);
+    optional_field(json, "platform", device.platform, limits::device_platform);
+    json.end_object();
+}
+
 }  // namespace
+
+bool device_has_content(const DevicePayload &device) noexcept {
+    return !device.model.empty() || !device.type.empty() || !device.os.empty() ||
+           !device.os_family.empty() || !device.cpu.empty() || device.cpu_count > 0 ||
+           device.ram_mb > 0 || !device.gpu.empty() || !device.gpu_vendor.empty() ||
+           !device.gpu_version.empty() || !device.gpu_api.empty() || device.vram_mb > 0 ||
+           !device.screen.empty() ||
+           (std::isfinite(device.screen_dpi) && device.screen_dpi > 0.0) ||
+           (std::isfinite(device.refresh_rate) && device.refresh_rate > 0.0) ||
+           !device.orientation.empty() || device.fullscreen || !device.language.empty() ||
+           !device.engine.empty() || !device.scripting_backend.empty() ||
+           !device.platform.empty();
+}
 
 std::string build_crash_json(const CrashPayload &payload) {
     JsonWriter json;
@@ -69,6 +135,8 @@ std::string build_crash_json(const CrashPayload &payload) {
     optional_field(json, "steamId", payload.steam_id, limits::steam_id);
     json.bool_field("log", payload.log);
     correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
+    optional_field(json, "environment", payload.environment, limits::environment);
+    device_object(json, payload.device);
     json.end_object();
     return json.str();
 }
@@ -84,6 +152,8 @@ std::string build_bug_report_json(const BugReportPayload &payload) {
     breadcrumbs_field(json, payload.breadcrumbs);
     json.bool_field("log", payload.log);
     correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
+    optional_field(json, "environment", payload.environment, limits::environment);
+    device_object(json, payload.device);
     json.end_object();
     return json.str();
 }
@@ -111,6 +181,7 @@ std::string build_event_json(const EventPayload &payload) {
         json.end_object();
     }
     correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
+    optional_field(json, "environment", payload.environment, limits::environment);
     json.end_object();
     return json.str();
 }
@@ -127,6 +198,7 @@ std::string build_metric_json(const MetricPayload &payload) {
     json.string_field("arch", payload.arch);
     optional_field(json, "userId", payload.user_id, limits::user_id);
     correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
+    optional_field(json, "environment", payload.environment, limits::environment);
     json.end_object();
     return json.str();
 }
@@ -161,6 +233,15 @@ std::string build_heartbeat_json(const HeartbeatPayload &payload) {
     optional_field(json, "role", payload.role, limits::role);
     optional_field(json, "serverId", payload.server_id, limits::server_id);
     optional_field(json, "matchId", payload.match_id, limits::match_id);
+    // Fleet labels + deployment environment (heartbeat-only extras, matching the
+    // Unity SDK): region/hostname let the dashboard group dedicated servers;
+    // environment separates prod/staging/dev traffic (server default "production").
+    optional_field(json, "region", payload.region, limits::region);
+    optional_field(json, "hostname", payload.hostname, limits::hostname);
+    optional_field(json, "environment", payload.environment, limits::environment);
+    // Device specs ride heartbeats only until one beat is acked (the client
+    // clears them from subsequent beats; a lost beat re-carries them).
+    device_object(json, payload.device);
     json.end_object();
     return json.str();
 }

@@ -2,6 +2,33 @@
 
 All notable changes to the Tombstone Native SDK.
 
+## [0.6.0] - 2026-07-04
+
+### Added — parity with the Unity SDK (deployment env, fleet, device specs)
+
+- **`tombstone_set_environment(environment)`** — deployment environment (e.g. `"production"`,
+  `"staging"`, `"dev"`) stamped as `environment` on every payload (crash / bug / event / metric /
+  heartbeat; clamped to 64). Seedable via the new `tombstone_options.environment` field; an
+  explicit call overrides. NULL/empty is rejected and the current value retained — the environment
+  can never be silently blanked. The server defaults to `"production"` when the field is absent.
+- **`tombstone_set_server_info(region, hostname)`** — server-lifetime fleet labels emitted on
+  heartbeats only (`region` ≤64, `hostname` ≤255), so the dashboard can group and locate dedicated
+  servers. NULL keeps a label; `""` clears it.
+- **`tombstone_mark_dedicated_server(server_id, region, hostname)`** — declare a dedicated server
+  WITHOUT requiring a match: flips role to `"server"` and sets the id (region/hostname optional).
+  Previously only `tombstone_start_match` flipped the role, so a matchless native server never
+  registered in the Fleet. NULL/empty keeps existing values (never blanks). Clients must never call
+  it.
+- **Device specs** — new `tombstone_device_t` struct + `tombstone_set_device(device)` (engine-
+  agnostic: the SDK reports what you hand it, it never probes hardware; the struct is deep-copied
+  and clamped at the ABI boundary). The `device` object is emitted on crash and bug-report bodies,
+  and rides heartbeats **until one heartbeat is acked** (then dropped for the session; a lost beat
+  re-carries it — same delivery discipline as the Unity SDK), powering the player-profile Hardware
+  view for sessions that never crash.
+
+All additions are wire-compatible: a caller that sets none of them produces byte-identical bodies
+to 0.5.0 (every new field is omitted when unset). Byte-exact payload tests extended for each.
+
 ## [0.5.0] - 2026-06-11
 
 ### Added

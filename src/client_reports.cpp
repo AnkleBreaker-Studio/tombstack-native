@@ -131,6 +131,7 @@ tombstone_result Client::track_event(const char *name, const char *const *keys,
     payload.server_id = event_ctx.server_id;
     payload.match_id = event_ctx.match_id;
     payload.session_id = session_id_;
+    payload.environment = event_ctx.environment;
     payload.attributes.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
         if (keys[i] == nullptr || keys[i][0] == '\0') {
@@ -175,6 +176,7 @@ tombstone_result Client::track_metric(const char *name, double value, const char
     payload.server_id = metric_ctx.server_id;
     payload.match_id = metric_ctx.match_id;
     payload.session_id = session_id_;
+    payload.environment = metric_ctx.environment;
     if (metric_batch_.add(build_metric_json(payload))) {
         worker_->wake();
     }
@@ -226,6 +228,8 @@ tombstone_result Client::report_crash(const char *signature, const char *stack_h
     payload.server_id = crash_ctx.server_id;
     payload.match_id = crash_ctx.match_id;
     payload.session_id = session_id_;
+    payload.environment = crash_ctx.environment;
+    payload.device = current_device();  // hardware specs for the player-profile Hardware view
     // Pre-flush buffered events/metrics onto the outbound queue BEFORE enqueuing
     // the crash (mirrors Unity's FlushBatches() in captureException): on a fatal
     // crash the final batch must still be delivered, not lost in memory.
@@ -339,6 +343,8 @@ tombstone_result Client::report_bug(const char *category, const char *message, b
     payload.server_id = bug_ctx.server_id;
     payload.match_id = bug_ctx.match_id;
     payload.session_id = session_id_;
+    payload.environment = bug_ctx.environment;
+    payload.device = current_device();  // hardware specs for the player-profile Hardware view
     enqueue_ingest(bug_reports_path, build_bug_report_json(payload), Durability::write_ahead,
                    SidecarKind::bug_report, want_log, /*log_from_previous=*/false);
     return TOMBSTONE_OK;

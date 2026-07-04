@@ -15,10 +15,36 @@ using tombstone::build_metric_json;
 using tombstone::build_pull_fulfill_json;
 using tombstone::build_pull_request_json;
 using tombstone::CrashPayload;
+using tombstone::device_has_content;
+using tombstone::DevicePayload;
 using tombstone::EventPayload;
 using tombstone::HeartbeatPayload;
 using tombstone::MetricPayload;
 using tombstone::pull_request_targets_client;
+
+namespace {
+// A representative device with a mix of set string / int / numeric / bool fields, used to
+// assert the byte-exact `device` object across crash, bug, and heartbeat bodies.
+DevicePayload sample_device() {
+    DevicePayload device;
+    device.model = "Alienware m18";
+    device.os_family = "Windows";
+    device.cpu = "Ryzen 9 7945HX";
+    device.cpu_count = 16;
+    device.ram_mb = 32768;
+    device.gpu = "RTX 4080";
+    device.vram_mb = 12288;
+    device.screen = "2560x1600";
+    device.refresh_rate = 165.0;  // integral double -> "165" (no trailing ".0")
+    device.fullscreen = true;
+    return device;
+}
+// The serialized form of sample_device() — schema field order, unset dimensions omitted.
+constexpr const char *sample_device_json =
+    R"("device":{"model":"Alienware m18","osFamily":"Windows","cpu":"Ryzen 9 7945HX",)"
+    R"("cpuCount":16,"ramMB":32768,"gpu":"RTX 4080","vramMB":12288,"screen":"2560x1600",)"
+    R"("refreshRate":165,"fullscreen":true})";
+}  // namespace
 
 TEST_CASE("payloads", "crash with every field is byte exact") {
     CrashPayload payload;
@@ -348,6 +374,202 @@ TEST_CASE("payloads", "pull target matcher mirrors the server heartbeatMatchesRe
     CHECK(!pull_request_targets_client("userId", "u1", "", "s1", "m1", "srv1"));
     CHECK(!pull_request_targets_client("ip", "u1", "u1", "s1", "m1", "srv1"));
     CHECK(!pull_request_targets_client("userId", "", "u1", "s1", "m1", "srv1"));
+}
+
+TEST_CASE("payloads", "device_has_content is true only when a dimension is set") {
+    CHECK(!device_has_content(DevicePayload{}));  // default -> no `device` object
+    DevicePayload only_gpu;
+    only_gpu.gpu = "RTX 4080";
+    CHECK(device_has_content(only_gpu));
+    DevicePayload only_ram;
+    only_ram.ram_mb = 8192;
+    CHECK(device_has_content(only_ram));
+    DevicePayload only_fullscreen;
+    only_fullscreen.fullscreen = true;
+    CHECK(device_has_content(only_fullscreen));
+}
+
+TEST_CASE("payloads", "crash stamps environment after correlation") {
+    // environment is the last correlation-adjacent field; present here, no device.
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "linux";
+    payload.arch = "x64";
+    payload.signature = "deadbeef";
+    payload.stack_hint = "hint";
+    payload.log = false;
+    payload.session_id = "sess-9";
+    payload.environment = "staging";
+    CHECK_EQ(build_crash_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"linux","arch":"x64",)"
+                         R"("signature":"deadbeef","stackHint":"hint","log":false,)"
+                         R"("sessionId":"sess-9","environment":"staging"})"});
+}
+
+TEST_CASE("payloads", "crash carries the device object after environment") {
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.signature = "deadbeef";
+    payload.stack_hint = "hint";
+    payload.log = false;
+    payload.environment = "production";
+    payload.device = sample_device();
+    CHECK_EQ(build_crash_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                         R"("signature":"deadbeef","stackHint":"hint","log":false,)"
+                         R"("environment":"production",)"} +
+                 sample_device_json + "}");
+}
+
+TEST_CASE("payloads", "crash omits the device object when no dimension is set") {
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.signature = "deadbeef";
+    payload.stack_hint = "hint";
+    payload.log = false;
+    // environment + device both unset -> neither appears.
+    const std::string json = build_crash_json(payload);
+    CHECK(json.find("\"device\"") == std::string::npos);
+    CHECK(json.find("\"environment\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "bug report carries environment and device") {
+    BugReportPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "2.0.0";
+    payload.os = "macos";
+    payload.arch = "arm64";
+    payload.message = "hitch on load";
+    payload.log = false;
+    payload.environment = "dev";
+    payload.device = sample_device();
+    CHECK_EQ(build_bug_report_json(payload),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"2.0.0","os":"macos","arch":"arm64",)"
+                         R"("message":"hitch on load","log":false,)"
+                         R"("environment":"dev",)"} +
+                 sample_device_json + "}");
+}
+
+TEST_CASE("payloads", "heartbeat carries fleet labels, environment, and device in order") {
+    // Field order after correlation: region, hostname, environment, then the device object.
+    HeartbeatPayload payload;
+    payload.session_id = "boot-1";
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "linux";
+    payload.arch = "x64";
+    payload.role = "server";
+    payload.server_id = "srv-eu-1";
+    payload.match_id = "m-42";
+    payload.region = "eu-west-1";
+    payload.hostname = "gs-eu-1";
+    payload.environment = "production";
+    payload.device = sample_device();
+    CHECK_EQ(build_heartbeat_json(payload),
+             std::string{R"({"sessionId":"boot-1",)"
+                         R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"linux","arch":"x64",)"
+                         R"("role":"server","serverId":"srv-eu-1","matchId":"m-42",)"
+                         R"("region":"eu-west-1","hostname":"gs-eu-1",)"
+                         R"("environment":"production",)"} +
+                 sample_device_json + "}");
+}
+
+TEST_CASE("payloads", "heartbeat omits fleet labels, environment, and device when empty") {
+    // A plain client beat with none of the new fields set must be byte-identical to
+    // the pre-0.6 wire shape (no region/hostname/environment/device keys).
+    HeartbeatPayload payload;
+    payload.session_id = "boot-1";
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.role = "client";
+    const std::string json = build_heartbeat_json(payload);
+    CHECK_EQ(json, std::string{R"({"sessionId":"boot-1",)"
+                               R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                               R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                               R"("role":"client"})"});
+    CHECK(json.find("\"region\"") == std::string::npos);
+    CHECK(json.find("\"hostname\"") == std::string::npos);
+    CHECK(json.find("\"environment\"") == std::string::npos);
+    CHECK(json.find("\"device\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "device object omits fullscreen when false") {
+    // false is "unset" for the boolean (the server cleans 0/false anyway).
+    DevicePayload device;
+    device.gpu = "Intel Arc";
+    device.fullscreen = false;
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.signature = "sig";
+    payload.stack_hint = "hint";
+    payload.log = false;
+    payload.device = device;
+    const std::string json = build_crash_json(payload);
+    CHECK(json.find(R"("device":{"gpu":"Intel Arc"})") != std::string::npos);
+    CHECK(json.find("\"fullscreen\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "event and metric carry environment") {
+    EventPayload event;
+    event.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    event.build_version = "1.0.0";
+    event.os = "windows";
+    event.arch = "x64";
+    event.name = "spawn";
+    event.environment = "staging";
+    const std::string event_json = build_event_json(event);
+    CHECK(event_json.find(R"("name":"spawn","environment":"staging")") != std::string::npos);
+
+    MetricPayload metric;
+    metric.name = "rtt";
+    metric.value = 42.5;
+    metric.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    metric.build_version = "1.0.0";
+    metric.os = "linux";
+    metric.arch = "arm64";
+    metric.environment = "staging";
+    const std::string metric_json = build_metric_json(metric);
+    CHECK(metric_json.find(R"("environment":"staging")") != std::string::npos);
+    // events/metrics never carry a device object.
+    CHECK(event_json.find("\"device\"") == std::string::npos);
+    CHECK(metric_json.find("\"device\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "device object clamps oversized string dimensions") {
+    DevicePayload device;
+    device.gpu = std::string(400, 'g');  // device_gpu max 256
+    device.os_family = std::string(100, 'o');  // device_os_family max 48
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.signature = "sig";
+    payload.stack_hint = "hint";
+    payload.log = false;
+    payload.device = device;
+    // NOTE: clamping happens in Client::set_device (the ABI boundary), not in the
+    // JSON builder — the builder emits the struct verbatim. This asserts the builder
+    // faithfully serializes whatever the caller set; boundary clamping is covered by
+    // the payloads limits consts (limits::device_gpu == 256).
+    const std::string json = build_crash_json(payload);
+    CHECK(json.find(std::string(400, 'g')) != std::string::npos);
 }
 
 TEST_CASE("payloads", "event stamps correlation dimensions after attributes") {

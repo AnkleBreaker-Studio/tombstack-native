@@ -43,7 +43,60 @@ constexpr std::size_t pull_target_type = 32;  // enum "userId"/"sessionId"/"matc
 constexpr std::size_t pull_target_value = 128;
 constexpr std::size_t pull_reason = 280;      // server MAX_PULL_REASON
 constexpr std::size_t pull_nonce = 256;       // server pullFulfillSchema nonce max
+constexpr std::size_t environment = 64;       // deployment environment ("production" server default)
+constexpr std::size_t region = 64;            // fleet label, heartbeats only
+constexpr std::size_t hostname = 255;         // fleet label, heartbeats only
+// device object maxima (server deviceSchema; crash/bug/heartbeat bodies)
+constexpr std::size_t device_model = 256;
+constexpr std::size_t device_type = 32;
+constexpr std::size_t device_os = 256;
+constexpr std::size_t device_os_family = 48;
+constexpr std::size_t device_cpu = 256;
+constexpr std::size_t device_gpu = 256;
+constexpr std::size_t device_gpu_vendor = 256;
+constexpr std::size_t device_gpu_version = 256;
+constexpr std::size_t device_gpu_api = 64;
+constexpr std::size_t device_screen = 32;     // "WxH"
+constexpr std::size_t device_orientation = 32;
+constexpr std::size_t device_language = 48;
+constexpr std::size_t device_engine = 48;
+constexpr std::size_t device_scripting_backend = 32;
+constexpr std::size_t device_platform = 48;
 }  // namespace limits
+
+/**
+ * Device specs, mirrored from the caller (the SDK reports what it is handed,
+ * it never probes hardware). Every field is optional: an empty string / 0
+ * means "unset" and is OMITTED from the wire body; a default-constructed
+ * struct emits no `device` object at all. Emitted on crash, bug-report, and
+ * heartbeat bodies (the latter only until one heartbeat is acked).
+ */
+struct DevicePayload {
+    std::string model;             // empty -> omitted
+    std::string type;              // empty -> omitted
+    std::string os;                // empty -> omitted
+    std::string os_family;         // empty -> omitted
+    std::string cpu;               // empty -> omitted
+    int cpu_count{0};              // <= 0 -> omitted
+    int ram_mb{0};                 // <= 0 -> omitted
+    std::string gpu;               // empty -> omitted
+    std::string gpu_vendor;        // empty -> omitted
+    std::string gpu_version;       // empty -> omitted
+    std::string gpu_api;           // empty -> omitted
+    int vram_mb{0};                // <= 0 -> omitted
+    std::string screen;            // "WxH"; empty -> omitted
+    double screen_dpi{0.0};        // <= 0 / non-finite -> omitted
+    double refresh_rate{0.0};      // <= 0 / non-finite -> omitted
+    std::string orientation;       // empty -> omitted
+    bool fullscreen{false};        // false -> omitted (the server cleans 0/false anyway)
+    std::string language;          // empty -> omitted
+    std::string engine;            // empty -> omitted
+    std::string scripting_backend; // empty -> omitted
+    std::string platform;          // empty -> omitted
+};
+
+/** True when at least one device field is set (i.e. a `device` object would be emitted). */
+bool device_has_content(const DevicePayload &device) noexcept;
 
 struct CrashPayload {
     std::string occurred_at_iso;
@@ -61,6 +114,8 @@ struct CrashPayload {
     std::string server_id;               // empty -> omitted
     std::string match_id;                // empty -> omitted
     std::string session_id;              // empty -> omitted
+    std::string environment;             // empty -> omitted (server defaults to "production")
+    DevicePayload device;                // all-unset -> `device` object omitted
 };
 
 struct BugReportPayload {
@@ -78,6 +133,8 @@ struct BugReportPayload {
     std::string server_id;               // empty -> omitted
     std::string match_id;                // empty -> omitted
     std::string session_id;              // empty -> omitted
+    std::string environment;             // empty -> omitted (server defaults to "production")
+    DevicePayload device;                // all-unset -> `device` object omitted
 };
 
 struct EventPayload {
@@ -93,6 +150,7 @@ struct EventPayload {
     std::string server_id;  // empty -> omitted
     std::string match_id;   // empty -> omitted
     std::string session_id; // empty -> omitted
+    std::string environment; // empty -> omitted (server defaults to "production")
 };
 
 struct MetricPayload {
@@ -108,6 +166,7 @@ struct MetricPayload {
     std::string server_id;   // empty -> omitted
     std::string match_id;    // empty -> omitted
     std::string session_id;  // empty -> omitted
+    std::string environment; // empty -> omitted (server defaults to "production")
 };
 
 struct HeartbeatPayload {
@@ -120,6 +179,10 @@ struct HeartbeatPayload {
     std::string role;      // "client"/"server"; empty -> omitted
     std::string server_id; // empty -> omitted
     std::string match_id;  // empty -> omitted
+    std::string region;    // fleet label; empty -> omitted
+    std::string hostname;  // fleet label; empty -> omitted
+    std::string environment; // empty -> omitted (server defaults to "production")
+    DevicePayload device;  // carried until one heartbeat is acked; all-unset -> omitted
 };
 
 std::string build_crash_json(const CrashPayload &payload);

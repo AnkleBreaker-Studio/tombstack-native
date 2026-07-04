@@ -39,6 +39,16 @@ clean quit. That's the whole integration; everything else is automatic.
 | Rolling session log (512 KB cap, rotates to `previous-session.log`) | `tombstone_log_line` — mirror your engine's log hook |
 | Per-signature crash dedupe (≤ 1 report/min; repeats become a counter breadcrumb) | `tombstone_add_breadcrumb` — manual trail marker |
 | Exponential-backoff retries, write-ahead durability for crashes & bugs | `tombstone_set_user` / `tombstone_set_consent` |
+| Deployment environment / fleet labels / device specs ride the relevant payloads once set | `tombstone_set_environment` — tag prod/staging/dev |
+| Dedicated servers register in the Fleet even without matches | `tombstone_mark_dedicated_server` — server identity + fleet labels |
+| Player-profile Hardware view (specs even on non-crashing sessions) | `tombstone_set_device` — hand the SDK your CPU/GPU/RAM/display |
+
+Multiplayer & fleet: `tombstone_set_match_context` / `tombstone_start_match` / `tombstone_end_match`
+correlate a match; `tombstone_mark_dedicated_server(server_id, region, hostname)` marks a dedicated
+server (flips role to `server`) without needing a match; `tombstone_set_server_info(region,
+hostname)` sets fleet labels. `tombstone_set_environment("staging")` tags every payload;
+`tombstone_set_device(&specs)` attaches hardware specs (the SDK never probes — you hand it what
+your engine already knows) to crashes, bug reports, and the session's first heartbeat.
 
 Every call returns a `tombstone_result`; nothing ever throws across the ABI,
 and the SDK never writes to stdout/stderr (wire a `log_callback` to see its

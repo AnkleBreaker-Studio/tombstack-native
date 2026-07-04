@@ -6,6 +6,7 @@
 #include "batch.h"
 #include "breadcrumb_ring.h"
 #include "dedupe.h"
+#include "payloads.h"
 #include "sampler.h"
 #include "sdk_log.h"
 #include "session_log.h"
@@ -51,6 +52,11 @@ public:
 
     tombstone_result set_user(const char *user_id, const char *steam_id);
     tombstone_result set_consent(bool granted);
+    tombstone_result set_environment(const char *environment);
+    tombstone_result set_server_info(const char *region, const char *hostname);
+    tombstone_result mark_dedicated_server(const char *server_id, const char *region,
+                                           const char *hostname);
+    tombstone_result set_device(const tombstone_device_t *device);
     tombstone_result set_match_context(const char *server_id, const char *match_id);
     tombstone_result start_match(char *out_match_id, std::size_t out_cap);
     tombstone_result end_match();
@@ -103,13 +109,26 @@ private:
     std::string current_user_id() const;
     std::string current_steam_id() const;
 
-    /** Snapshot of the cached multiplayer correlation context (mutex-guarded). */
+    /** Snapshot of the cached multiplayer correlation context (mutex-guarded).
+     *  `environment` is stamped on EVERY payload; role/server_id/match_id on all
+     *  but ride the heartbeat too. */
     struct MatchContext {
-        std::string role;       // "" -> omitted (never an empty-string enum on the wire)
-        std::string server_id;  // "" -> omitted
-        std::string match_id;   // "" -> omitted
+        std::string role;         // "" -> omitted (never an empty-string enum on the wire)
+        std::string server_id;    // "" -> omitted
+        std::string match_id;     // "" -> omitted
+        std::string environment;  // "" -> omitted (server defaults to "production")
     };
     MatchContext current_match_context() const;
+
+    /** Server-lifetime fleet labels, emitted on heartbeats only (mutex-guarded). */
+    struct ServerInfo {
+        std::string region;    // "" -> omitted
+        std::string hostname;  // "" -> omitted
+    };
+    ServerInfo current_server_info() const;
+
+    /** Snapshot of the caller-supplied device specs (mutex-guarded). */
+    DevicePayload current_device() const;
 
     // diagnostics + storage (order matters: sdk_log_ first, it is referenced)
     SdkLog sdk_log_;
@@ -165,9 +184,24 @@ private:
     std::string role_;
     std::string server_id_;
     std::string match_id_;
+    // deployment environment (stamped on every payload) + server-lifetime fleet
+    // labels (heartbeat-only) + caller-supplied device specs, all guarded by
+    // match_mutex_ (the shared "context" lock, snapshotted once per payload).
+    std::string environment_;
+    std::string region_;
+    std::string hostname_;
+    DevicePayload device_;
 
     // current level / scene context (K2), stored alongside the correlation context
     std::string current_level_;
+
+    // Device-on-heartbeat delivery (mirrors the Unity SDK): the device object rides
+    // heartbeats until one carrying it is acked (2xx), then is dropped from beats for
+    // the rest of the session. `carry_in_flight_` is raised when a beat carries the
+    // device and lowered on the next heartbeat ack, which sets `sent_`. Heartbeats are
+    // ephemeral + serialized through one worker queue, so a lost beat simply re-carries.
+    std::atomic<bool> device_sent_on_heartbeat_{false};
+    std::atomic<bool> device_carry_in_flight_{false};
 
     // heartbeat timer thread
     std::thread heartbeat_thread_;

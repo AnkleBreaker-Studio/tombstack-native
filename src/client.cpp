@@ -107,6 +107,11 @@ tombstone_result Client::init(const tombstone_options &options) {
     os_ = os_name();
     arch_ = arch_name();
     session_id_ = random_session_id();
+    // Deployment environment: the init option seeds it; an explicit set_environment()
+    // call later overrides. Empty/absent -> unset (the server defaults to "production").
+    if (options.environment != nullptr && options.environment[0] != '\0') {
+        environment_ = std::string{utf8_safe_truncate(options.environment, limits::environment)};
+    }
     heartbeats_enabled_ = options.enable_heartbeats != 0;
     session_log_enabled_ = options.enable_session_log != 0;
     unclean_detection_enabled_ = options.enable_unclean_shutdown_detection != 0;
@@ -234,6 +239,8 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
     payload.stack_hint = unclean_stack_hint;
     payload.user_id = current_user_id();
     payload.steam_id = current_steam_id();
+    payload.environment = current_match_context().environment;
+    payload.device = current_device();  // same physical machine, captured this launch
     // This launch's crumbs belong to this session, not the dead one.
     payload.log = session_log_enabled_ && had_previous_log_;
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
@@ -259,12 +266,30 @@ void Client::heartbeat_loop() {
                 payload.role = ctx.role.empty() ? std::string{"client"} : ctx.role;
                 payload.server_id = ctx.server_id;
                 payload.match_id = ctx.match_id;
+                payload.environment = ctx.environment;
+                // Server-lifetime fleet labels (region/hostname) group dedicated servers.
+                const ServerInfo info = current_server_info();
+                payload.region = info.region;
+                payload.hostname = info.hostname;
+                // Device specs ride the beat until one is acked, then never again this
+                // session (a lost beat re-carries — see device_sent_on_heartbeat_).
+                bool carrying_device = false;
+                if (!device_sent_on_heartbeat_.load(std::memory_order_relaxed)) {
+                    DevicePayload device = current_device();
+                    if (device_has_content(device)) {
+                        payload.device = std::move(device);
+                        carrying_device = true;
+                    }
+                }
                 UploadJob job;
                 job.url = endpoint_ + heartbeats_path;
                 job.body = build_heartbeat_json(payload);
                 job.durability = Durability::ephemeral;  // a missed beat is stale data
                 job.parse_ack = true;  // the 202 ack may carry pull requests for us
                 job.sign_body = true;  // heartbeats are an ingest POST — sign them (S3)
+                if (carrying_device) {
+                    device_carry_in_flight_.store(true, std::memory_order_relaxed);
+                }
                 worker_->enqueue(std::move(job));
             } catch (const std::exception &e) {
                 sdk_log_.warn(std::string{"heartbeat build failed: "} + e.what());
@@ -295,6 +320,12 @@ void Client::stop_heartbeat() {
  */
 void Client::handle_heartbeat_ack(const std::string &response_body) {
     try {
+        // Fires on every heartbeat 2xx (worker.cpp). If the beat that just delivered was
+        // carrying the device snapshot, mark it sent so subsequent beats drop it. Done
+        // before the body/consent early-returns so an empty ack still confirms delivery.
+        if (device_carry_in_flight_.exchange(false, std::memory_order_relaxed)) {
+            device_sent_on_heartbeat_.store(true, std::memory_order_relaxed);
+        }
         if (!capture_allowed() || response_body.empty()) {
             return;
         }
@@ -340,6 +371,86 @@ tombstone_result Client::set_consent(bool granted) {
     return TOMBSTONE_OK;
 }
 
+tombstone_result Client::set_environment(const char *environment) {
+    // Null/empty is rejected and the current value retained — the environment can
+    // never be silently blanked (a bad call must not mis-tag the whole session).
+    if (environment == nullptr || environment[0] == '\0') {
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+    }
+    const std::lock_guard<std::mutex> lock(match_mutex_);
+    environment_ = std::string{utf8_safe_truncate(environment, limits::environment)};
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::set_server_info(const char *region, const char *hostname) {
+    // NULL keeps a label unchanged; "" clears it (a cleared label is omitted on the wire).
+    const std::lock_guard<std::mutex> lock(match_mutex_);
+    if (region != nullptr) {
+        region_ = std::string{utf8_safe_truncate(region, limits::region)};
+    }
+    if (hostname != nullptr) {
+        hostname_ = std::string{utf8_safe_truncate(hostname, limits::hostname)};
+    }
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::mark_dedicated_server(const char *server_id, const char *region,
+                                               const char *hostname) {
+    // Declare this process a dedicated server WITHOUT requiring a match: flip role to
+    // "server" and set the id. NULL/empty server_id keeps the existing id (never blanks);
+    // region/hostname are optional and NULL/empty keeps the current value.
+    const std::lock_guard<std::mutex> lock(match_mutex_);
+    role_ = "server";
+    if (server_id != nullptr && server_id[0] != '\0') {
+        server_id_ = std::string{utf8_safe_truncate(server_id, limits::server_id)};
+    }
+    if (region != nullptr && region[0] != '\0') {
+        region_ = std::string{utf8_safe_truncate(region, limits::region)};
+    }
+    if (hostname != nullptr && hostname[0] != '\0') {
+        hostname_ = std::string{utf8_safe_truncate(hostname, limits::hostname)};
+    }
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::set_device(const tombstone_device_t *device) {
+    DevicePayload copy;  // NULL -> clears the cached device
+    if (device != nullptr) {
+        const auto str = [](const char *v, std::size_t max) {
+            return (v != nullptr) ? std::string{utf8_safe_truncate(v, max)} : std::string{};
+        };
+        copy.model = str(device->model, limits::device_model);
+        copy.type = str(device->type, limits::device_type);
+        copy.os = str(device->os, limits::device_os);
+        copy.os_family = str(device->os_family, limits::device_os_family);
+        copy.cpu = str(device->cpu, limits::device_cpu);
+        copy.cpu_count = device->cpu_count;
+        copy.ram_mb = device->ram_mb;
+        copy.gpu = str(device->gpu, limits::device_gpu);
+        copy.gpu_vendor = str(device->gpu_vendor, limits::device_gpu_vendor);
+        copy.gpu_version = str(device->gpu_version, limits::device_gpu_version);
+        copy.gpu_api = str(device->gpu_api, limits::device_gpu_api);
+        copy.vram_mb = device->vram_mb;
+        copy.screen = str(device->screen, limits::device_screen);
+        copy.screen_dpi = device->screen_dpi;
+        copy.refresh_rate = device->refresh_rate;
+        copy.orientation = str(device->orientation, limits::device_orientation);
+        copy.fullscreen = device->fullscreen != 0;
+        copy.language = str(device->language, limits::device_language);
+        copy.engine = str(device->engine, limits::device_engine);
+        copy.scripting_backend = str(device->scripting_backend, limits::device_scripting_backend);
+        copy.platform = str(device->platform, limits::device_platform);
+    }
+    {
+        const std::lock_guard<std::mutex> lock(match_mutex_);
+        device_ = std::move(copy);
+    }
+    // A changed device re-arms heartbeat delivery: the new specs ride beats until acked.
+    device_sent_on_heartbeat_.store(false, std::memory_order_relaxed);
+    device_carry_in_flight_.store(false, std::memory_order_relaxed);
+    return TOMBSTONE_OK;
+}
+
 tombstone_result Client::set_match_context(const char *server_id, const char *match_id) {
     const std::lock_guard<std::mutex> lock(match_mutex_);
     server_id_ = (server_id != nullptr)
@@ -377,7 +488,17 @@ tombstone_result Client::end_match() {
 
 Client::MatchContext Client::current_match_context() const {
     const std::lock_guard<std::mutex> lock(match_mutex_);
-    return MatchContext{role_, server_id_, match_id_};
+    return MatchContext{role_, server_id_, match_id_, environment_};
+}
+
+Client::ServerInfo Client::current_server_info() const {
+    const std::lock_guard<std::mutex> lock(match_mutex_);
+    return ServerInfo{region_, hostname_};
+}
+
+DevicePayload Client::current_device() const {
+    const std::lock_guard<std::mutex> lock(match_mutex_);
+    return device_;
 }
 
 tombstone_result Client::flush(int timeout_ms) {

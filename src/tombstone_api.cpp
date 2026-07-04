@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr const char *sdk_version = "0.5.0";
+constexpr const char *sdk_version = "0.6.0";
 
 // The process-wide client. Entry points snapshot the shared_ptr under the
 // mutex and call outside it, so a long flush() neither blocks other calls nor
@@ -46,6 +46,7 @@ tombstone_result tombstone_options_init(tombstone_options *options) {
     options->token = nullptr;
     options->build_version = nullptr;
     options->data_dir = nullptr;
+    options->environment = nullptr;  // unset -> server defaults to "production"
     options->heartbeat_interval_s = 0;  // 0 -> default (60s)
     options->enable_heartbeats = 1;
     options->enable_session_log = 1;
@@ -106,6 +107,28 @@ tombstone_result tombstone_set_user(const char *user_id, const char *steam_id) {
 tombstone_result tombstone_set_consent(int granted) {
     return with_client(
         [&](tombstone::Client &client) { return client.set_consent(granted != 0); });
+}
+
+tombstone_result tombstone_set_environment(const char *environment) {
+    return with_client(
+        [&](tombstone::Client &client) { return client.set_environment(environment); });
+}
+
+tombstone_result tombstone_set_server_info(const char *region, const char *hostname) {
+    return with_client(
+        [&](tombstone::Client &client) { return client.set_server_info(region, hostname); });
+}
+
+tombstone_result tombstone_mark_dedicated_server(const char *server_id, const char *region,
+                                                 const char *hostname) {
+    return with_client([&](tombstone::Client &client) {
+        return client.mark_dedicated_server(server_id, region, hostname);
+    });
+}
+
+tombstone_result tombstone_set_device(const tombstone_device_t *device) {
+    return with_client(
+        [&](tombstone::Client &client) { return client.set_device(device); });
 }
 
 void tombstone_set_match_context(tombstone_handle * /*handle*/, const char *server_id,

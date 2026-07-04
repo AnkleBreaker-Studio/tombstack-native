@@ -89,6 +89,10 @@ typedef struct tombstone_options {
     const char *build_version;
     /** Writable directory for sidecars, session log, marker. NULL = platform default. */
     const char *data_dir;
+    /** Deployment environment stamped on every payload (e.g. "production",
+     *  "staging", "dev"; clamped to 64). NULL/empty = unset (the server
+     *  defaults to "production"). tombstone_set_environment() overrides this. */
+    const char *environment;
     /** Seconds between session heartbeats; clamped to [15, 600]. 0 = default (60). */
     int heartbeat_interval_s;
     /** Nonzero (default) = emit periodic session heartbeats. */
@@ -139,6 +143,41 @@ TOMBSTONE_API tombstone_result tombstone_set_user(const char *user_id, const cha
 TOMBSTONE_API tombstone_result tombstone_set_consent(int granted);
 
 /**
+ * Set the deployment environment (e.g. "production", "staging", "dev"),
+ * stamped as `environment` on every subsequent payload — crashes, bug reports,
+ * events, metrics, and heartbeats (clamped to 64 chars; the server defaults to
+ * "production" when absent). Overrides tombstone_options.environment. A
+ * NULL/empty value is rejected with TOMBSTONE_ERROR_INVALID_ARGUMENT and the
+ * current environment is retained — the environment can never be blanked.
+ */
+TOMBSTONE_API tombstone_result tombstone_set_environment(const char *environment);
+
+/**
+ * Set server-lifetime fleet labels, emitted on HEARTBEATS only (matching the
+ * Unity SDK): `region` (clamped to 64) and `hostname` (clamped to 255) let the
+ * dashboard group and locate dedicated servers. Pass NULL to keep a label
+ * unchanged; pass "" to clear it (a cleared/empty label is omitted from the
+ * wire body).
+ */
+TOMBSTONE_API tombstone_result tombstone_set_server_info(const char *region,
+                                                         const char *hostname);
+
+/**
+ * Mark this process as a DEDICATED SERVER without requiring a match: flips
+ * role to "server" for all subsequent telemetry and sets `server_id` (clamped
+ * to 128). A NULL/empty `server_id` keeps the existing id — the server
+ * identity is never blanked. `region`/`hostname` are optional fleet labels
+ * (see tombstone_set_server_info); NULL/empty keeps the current value.
+ *
+ * Game CLIENTS must never call this: a client that claims role="server"
+ * pollutes the Fleet registry and can be targeted by server-scoped log pulls.
+ * Call it once at boot on dedicated-server builds only.
+ */
+TOMBSTONE_API tombstone_result tombstone_mark_dedicated_server(const char *server_id,
+                                                               const char *region,
+                                                               const char *hostname);
+
+/**
  * Tag subsequent telemetry with multiplayer correlation context. `server_id`
  * and `match_id` are stamped (clamped to 128 chars) onto every crash, bug, and
  * event body so server<->match<->session linking is exact. Pass NULL to clear
@@ -167,6 +206,47 @@ TOMBSTONE_API tombstone_result tombstone_start_match(tombstone_handle *h, char *
  * opaque handle; pass NULL. Fail-soft: a no-op before init.
  */
 TOMBSTONE_API void tombstone_end_match(tombstone_handle *h);
+
+/**
+ * Device specs, engine-agnostic by design: the SDK reports what you hand it —
+ * it does NOT probe hardware (your engine already knows its GPU/CPU/screen).
+ * Zero the struct; every field is optional and NULL/0 means "unset" (unset
+ * fields are omitted from the wire body). Strings are clamped to the wire
+ * contract maxima noted per field.
+ */
+typedef struct tombstone_device_t {
+    const char *model;             /* <=256 device/hardware model name */
+    const char *type;              /* <=32  e.g. "Desktop", "Handheld", "Console" */
+    const char *os;                /* <=256 full OS string with version */
+    const char *os_family;         /* <=48  e.g. "Windows", "Linux", "macOS" */
+    const char *cpu;               /* <=256 CPU model string */
+    int cpu_count;                 /* logical core count; 0 = unset */
+    int ram_mb;                    /* system memory in MB; 0 = unset */
+    const char *gpu;               /* <=256 GPU device name */
+    const char *gpu_vendor;        /* <=256 GPU vendor name */
+    const char *gpu_version;       /* <=256 driver/API version string */
+    const char *gpu_api;           /* <=64  e.g. "Direct3D12", "Vulkan", "Metal" */
+    int vram_mb;                   /* video memory in MB; 0 = unset */
+    const char *screen;            /* <=32  "WxH", e.g. "2560x1440" */
+    double screen_dpi;             /* dots per inch; 0 = unset */
+    double refresh_rate;           /* display Hz; 0 = unset */
+    const char *orientation;       /* <=32  e.g. "Landscape", "Portrait" */
+    int fullscreen;                /* nonzero = fullscreen; 0 = unset/omitted */
+    const char *language;          /* <=48  system/user language tag */
+    const char *engine;            /* <=48  e.g. "Unreal 5.4", "Godot 4.3" */
+    const char *scripting_backend; /* <=32  e.g. "Native", "Mono", "GDScript" */
+    const char *platform;          /* <=48  store/runtime platform label */
+} tombstone_device_t;
+
+/**
+ * Cache device specs for subsequent payloads. The struct is deep-copied (the
+ * caller keeps ownership of every string). Emitted as the `device` JSON object
+ * on crash and bug-report bodies, and on heartbeats UNTIL ONE HEARTBEAT IS
+ * ACKED by the server (then dropped from beats for the rest of the session; a
+ * lost beat re-carries it). Pass NULL to clear the cached device. Set it once
+ * after init — device specs rarely change mid-session.
+ */
+TOMBSTONE_API tombstone_result tombstone_set_device(const tombstone_device_t *device);
 
 /**
  * Add a breadcrumb to the trail attached to future crash and bug reports.
