@@ -564,12 +564,14 @@ TEST_CASE("payloads", "device object clamps oversized string dimensions") {
     payload.stack_hint = "hint";
     payload.log = false;
     payload.device = device;
-    // NOTE: clamping happens in Client::set_device (the ABI boundary), not in the
-    // JSON builder — the builder emits the struct verbatim. This asserts the builder
-    // faithfully serializes whatever the caller set; boundary clamping is covered by
-    // the payloads limits consts (limits::device_gpu == 256).
+    // The device_object builder truncates each dimension to its schema max via
+    // optional_field (belt-and-suspenders alongside Client::set_device's boundary
+    // clamp), so an oversized gpu/osFamily is emitted at the limit, never verbatim.
     const std::string json = build_crash_json(payload);
-    CHECK(json.find(std::string(400, 'g')) != std::string::npos);
+    CHECK(json.find('"' + std::string(256, 'g') + '"') != std::string::npos);  // gpu clamped to 256
+    CHECK(json.find(std::string(257, 'g')) == std::string::npos);
+    CHECK(json.find('"' + std::string(48, 'o') + '"') != std::string::npos);  // osFamily clamped to 48
+    CHECK(json.find(std::string(49, 'o')) == std::string::npos);
 }
 
 TEST_CASE("payloads", "event stamps correlation dimensions after attributes") {
