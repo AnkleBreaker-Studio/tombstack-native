@@ -119,8 +119,9 @@ tombstone_result Client::init(const tombstone_options &options) {
     consent_ = options.consent_granted != 0;
     // v0.7 send gate: nonzero (default) latches immediately — today's behavior.
     // 0 defers heartbeats + batch drains until start_session(); a pre-init
-    // tombstone_start_session() is replayed by the C layer right after init.
-    collecting_started_ = options.auto_start_session != 0;
+    // tombstone_start_session() is replayed by the C layer right after init
+    // (StartGate::set survives this arm — see start_gate.h).
+    start_gate_.arm(options.auto_start_session != 0);
 
     const int interval = options.heartbeat_interval_s > 0 ? options.heartbeat_interval_s
                                                           : default_heartbeat_interval_s;
@@ -257,7 +258,7 @@ void Client::heartbeat_loop() {
         // v0.7 send gate: no beat leaves before start_session() — otherwise the
         // first heartbeat registers an anonymous "production" session before the
         // game has set identity/environment/metadata.
-        if (capture_allowed() && collecting_started_.load(std::memory_order_relaxed)) {
+        if (capture_allowed() && start_gate_.is_set()) {
             try {
                 HeartbeatPayload payload;
                 payload.session_id = session_id_;
@@ -425,7 +426,7 @@ tombstone_result Client::start_session() {
     // held heartbeats and batch drains; repeats are no-ops. Kick the heartbeat
     // loop so the first beat goes out promptly (not up to an interval late) and
     // wake the worker so batches buffered while deferred drain now.
-    if (!collecting_started_.exchange(true)) {
+    if (start_gate_.set()) {
         {
             const std::lock_guard<std::mutex> lock(heartbeat_mutex_);
             heartbeat_kick_ = true;
@@ -625,7 +626,7 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
 }
 
 void Client::drain_ready_batches() {
-    if (!collecting_started_.load(std::memory_order_relaxed)) {
+    if (!start_gate_.is_set()) {
         return;  // v0.7 send gate: drains held until start_session (items keep buffering)
     }
     const auto now = std::chrono::steady_clock::now();
@@ -634,7 +635,7 @@ void Client::drain_ready_batches() {
 }
 
 void Client::flush_all_batches() {
-    if (!collecting_started_.load(std::memory_order_relaxed)) {
+    if (!start_gate_.is_set()) {
         // Send gate held: even the quit/pre-crash force-drain ships nothing —
         // the game explicitly asked for silence until start_session (crash/bug
         // report bodies themselves are exempt and already enqueued upstream).

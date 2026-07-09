@@ -13,6 +13,7 @@
 #include "session_log.h"
 #include "session_marker.h"
 #include "sidecar_queue.h"
+#include "start_gate.h"
 #include "worker.h"
 
 #include <atomic>
@@ -182,9 +183,10 @@ private:
     // v0.7 send gate (Unity 0.15 parity): until this one-way latch is set, the
     // heartbeat loop sends NOTHING and event/metric batch DRAINS are held
     // (items keep buffering in the bounded batches); crash/bug reports are
-    // exempt — their write-ahead path never waits on identity. Seeded from
+    // exempt — their write-ahead path never waits on identity. Armed from
     // options.auto_start_session at init; start_session() sets it forever.
-    std::atomic<bool> collecting_started_{true};
+    // Latch semantics live (and are unit-tested) in start_gate.h.
+    StartGate start_gate_;
     std::mutex session_tracking_mutex_;
     bool session_tracking_started_{false};
     std::optional<SessionMarkerData> previous_marker_;
