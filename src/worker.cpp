@@ -1,6 +1,7 @@
 #include "worker.h"
 
 #include "json_scan.h"
+#include "retry_after.h"
 #include "sdk_log.h"
 #include "session_log.h"
 #include "transport.h"
@@ -25,6 +26,15 @@ Outcome classify(bool transport_error, long status) noexcept {
         return Outcome::transient;
     }
     return Outcome::poison;
+}
+
+/** Honor Retry-After only where the server means "back off and come back":
+ *  429 (rate limited) and 503 (unavailable). -1 = no usable hint. */
+long retry_after_hint(long status, const std::string &retry_after) noexcept {
+    if (status != 429 && status != 503) {
+        return -1;
+    }
+    return parse_retry_after_seconds(retry_after);
 }
 
 }  // namespace
@@ -196,7 +206,7 @@ void Worker::process(UploadJob &job) {
             if (outcome == Outcome::transient && job.attempt + 1 < max_attempts) {
                 // Retries share the backoff but log PUTs are never persisted —
                 // the presigned URL is dead by the next launch anyway.
-                retry_or_give_up(job);
+                retry_or_give_up(job, retry_after_hint(response.status, response.retry_after));
             } else if (outcome == Outcome::poison) {
                 sdk_log_.warn("log upload rejected with HTTP " + std::to_string(response.status));
             }
@@ -213,7 +223,8 @@ void Worker::process(UploadJob &job) {
         const bool emit_rtt = rtt_handler_ && job.sign_body && !job.suppress_rtt &&
                               classify(response.transport_error, response.status) ==
                                   Outcome::delivered;
-        handle_post_result(job, response.transport_error, response.status, response.body);
+        handle_post_result(job, response.transport_error, response.status, response.body,
+                           response.retry_after);
         if (emit_rtt) {
             const double ms = std::chrono::duration<double, std::milli>(round_trip).count();
             rtt_handler_(ms);
@@ -226,7 +237,8 @@ void Worker::process(UploadJob &job) {
 }
 
 void Worker::handle_post_result(UploadJob &job, bool transport_error, long status,
-                                const std::string &response_body) {
+                                const std::string &response_body,
+                                const std::string &retry_after) {
     switch (classify(transport_error, status)) {
     case Outcome::delivered:
         sidecars_.remove(job.sidecar_path);
@@ -249,7 +261,7 @@ void Worker::handle_post_result(UploadJob &job, bool transport_error, long statu
         if (job.durability == Durability::ephemeral) {
             return;  // a missed heartbeat is stale data, never retried
         }
-        retry_or_give_up(job);
+        retry_or_give_up(job, retry_after_hint(status, retry_after));
         return;
     }
 }
@@ -275,11 +287,13 @@ void Worker::schedule_log_put(const UploadJob &job, const std::string &response_
     enqueue(std::move(put));
 }
 
-void Worker::retry_or_give_up(UploadJob &job) {
+void Worker::retry_or_give_up(UploadJob &job, long retry_after_seconds) {
     if (job.attempt + 1 < max_attempts) {
         ++job.attempt;
-        const auto delay = retry_base_delay * (1 << (job.attempt - 1));  // 2s,4s,8s,16s
-        job.not_before = std::chrono::steady_clock::now() + delay;
+        // Exponential backoff (2s,4s,8s,16s), raised to the server's Retry-After
+        // (429/503) when that is larger, capped at 300s (retry_after.h).
+        job.not_before =
+            std::chrono::steady_clock::now() + retry_delay(job.attempt, retry_after_seconds);
         enqueue(std::move(job));
         return;
     }

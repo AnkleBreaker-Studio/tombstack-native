@@ -1,19 +1,29 @@
 #include <tombstone/tombstone.h>
 
 #include "client.h"
+#include "payloads.h"
+#include "preinit.h"
 
+#include <cmath>
 #include <memory>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace {
 
-constexpr const char *sdk_version = "0.6.0";
+constexpr const char *sdk_version = "0.7.0";
 
 // The process-wide client. Entry points snapshot the shared_ptr under the
 // mutex and call outside it, so a long flush() neither blocks other calls nor
 // races a concurrent shutdown (the instance stays alive until the call ends).
 std::mutex g_client_mutex;
 std::shared_ptr<tombstone::Client> g_client;
+
+// Pre-init capture store (v0.7): buffered into while no client exists,
+// replayed + cleared inside tombstone_init. Guarded by g_client_mutex — the
+// store itself is deliberately unsynchronized (see preinit.h).
+tombstone::PreInitStore g_preinit;
 
 std::shared_ptr<tombstone::Client> client_snapshot() {
     const std::lock_guard<std::mutex> lock(g_client_mutex);
@@ -31,6 +41,86 @@ tombstone_result with_client(Action &&action) noexcept {
         return action(*client);
     } catch (...) {
         return TOMBSTONE_ERROR_INTERNAL;
+    }
+}
+
+/**
+ * Run `action` against the live client, or `buffer` into the pre-init store
+ * when none exists (v0.7 pre-init capture). Same no-throw guarantee. The
+ * re-check under the mutex closes the init race: tombstone_init holds
+ * g_client_mutex across init + replay + publish, so a concurrent call either
+ * buffers before the replay reads the store, or lands on the published client.
+ */
+template <typename Action, typename Buffer>
+tombstone_result with_client_or_buffer(Action &&action, Buffer &&buffer) noexcept {
+    try {
+        std::shared_ptr<tombstone::Client> client = client_snapshot();
+        if (!client) {
+            const std::lock_guard<std::mutex> lock(g_client_mutex);
+            if (!g_client) {
+                return buffer(g_preinit);
+            }
+            client = g_client;
+        }
+        return action(*client);
+    } catch (...) {
+        return TOMBSTONE_ERROR_INTERNAL;
+    }
+}
+
+/**
+ * Replay the pre-init store into the freshly initialized client — in order,
+ * AFTER the options were applied, so an explicit pre-init Set* beats the
+ * matching init option (Unity 0.9.8 clobber-fix parity). Last-write-wins state
+ * first (consent / user / environment / metadata) so the replayed captures are
+ * gated and stamped correctly; then breadcrumbs; then events + metrics in
+ * their original combined order (replay-time timestamps — the pre-init window
+ * is milliseconds in practice); finally the remembered start-session latch.
+ * Every call is fail-soft: a rejected replay item must not fail init.
+ */
+void replay_preinit(tombstone::Client &client, const tombstone::PreInitStore &store) {
+    if (store.has_consent()) {
+        (void)client.set_consent(store.consent());
+    }
+    if (store.has_user()) {
+        (void)client.set_user(store.user_id().c_str(), store.steam_id().c_str());
+    }
+    if (store.has_environment()) {
+        (void)client.set_environment(store.environment().c_str());
+    }
+    if (store.has_user_metadata()) {
+        std::vector<const char *> keys;
+        std::vector<const char *> values;
+        keys.reserve(store.user_metadata().size());
+        values.reserve(store.user_metadata().size());
+        for (const auto &[key, value] : store.user_metadata()) {
+            keys.push_back(key.c_str());
+            values.push_back(value.c_str());
+        }
+        (void)client.set_user_metadata(keys.data(), values.data(), keys.size());
+    }
+    for (const auto &crumb : store.breadcrumbs()) {
+        (void)client.add_breadcrumb(static_cast<tombstone_level>(crumb.level),
+                                    crumb.message.c_str());
+    }
+    for (const auto &track : store.tracks()) {
+        if (track.is_metric) {
+            (void)client.track_metric(track.name.c_str(), track.value, track.unit.c_str());
+        } else {
+            std::vector<const char *> keys;
+            std::vector<const char *> values;
+            keys.reserve(track.attributes.size());
+            values.reserve(track.attributes.size());
+            for (const auto &[key, value] : track.attributes) {
+                keys.push_back(key.c_str());
+                values.push_back(value.c_str());
+            }
+            (void)client.track_event(track.name.c_str(), keys.data(), values.data(),
+                                     keys.size());
+        }
+    }
+    if (store.start_session_requested()) {
+        (void)client.start_session();
     }
 }
 
@@ -52,6 +142,7 @@ tombstone_result tombstone_options_init(tombstone_options *options) {
     options->enable_session_log = 1;
     options->enable_unclean_shutdown_detection = 1;
     options->consent_granted = 1;
+    options->auto_start_session = 1;  // 0 = defer sending until tombstone_start_session()
     options->enable_rtt_metric = 1;
     options->log_callback = nullptr;
     options->log_callback_user_data = nullptr;
@@ -74,6 +165,11 @@ tombstone_result tombstone_init(const tombstone_options *options) {
             if (result != TOMBSTONE_OK) {
                 return result;  // fresh is destroyed; nothing was published
             }
+            // v0.7: replay pre-init captures (in order, AFTER the options were
+            // applied) and clear the store, all before publishing — a concurrent
+            // capture call blocks on g_client_mutex and then lands on g_client.
+            replay_preinit(*fresh, g_preinit);
+            g_preinit.clear();
             g_client = std::move(fresh);
         }
         return TOMBSTONE_OK;
@@ -100,18 +196,64 @@ tombstone_result tombstone_shutdown(void) {
 }
 
 tombstone_result tombstone_set_user(const char *user_id, const char *steam_id) {
-    return with_client(
-        [&](tombstone::Client &client) { return client.set_user(user_id, steam_id); });
+    return with_client_or_buffer(
+        [&](tombstone::Client &client) { return client.set_user(user_id, steam_id); },
+        [&](tombstone::PreInitStore &store) {
+            // Last-write-wins; NULL clears exactly like the live call (which
+            // clamps at replay). Empty string == cleared on the wire.
+            store.set_user(user_id != nullptr ? user_id : "",
+                           steam_id != nullptr ? steam_id : "");
+            return TOMBSTONE_OK;
+        });
 }
 
 tombstone_result tombstone_set_consent(int granted) {
-    return with_client(
-        [&](tombstone::Client &client) { return client.set_consent(granted != 0); });
+    return with_client_or_buffer(
+        [&](tombstone::Client &client) { return client.set_consent(granted != 0); },
+        [&](tombstone::PreInitStore &store) {
+            // Buffered last-write-wins; replayed AFTER options.consent_granted
+            // is applied, so an explicit pre-init choice beats the init option.
+            store.set_consent(granted != 0);
+            return TOMBSTONE_OK;
+        });
+}
+
+tombstone_result tombstone_start_session(void) {
+    return with_client_or_buffer(
+        [](tombstone::Client &client) { return client.start_session(); },
+        [](tombstone::PreInitStore &store) {
+            store.request_start_session();  // remembered: the latch survives into init
+            return TOMBSTONE_OK;
+        });
 }
 
 tombstone_result tombstone_set_environment(const char *environment) {
-    return with_client(
-        [&](tombstone::Client &client) { return client.set_environment(environment); });
+    return with_client_or_buffer(
+        [&](tombstone::Client &client) { return client.set_environment(environment); },
+        [&](tombstone::PreInitStore &store) {
+            if (environment == nullptr || environment[0] == '\0') {
+                return TOMBSTONE_ERROR_INVALID_ARGUMENT;  // same contract as the live call
+            }
+            store.set_environment(environment);
+            return TOMBSTONE_OK;
+        });
+}
+
+tombstone_result tombstone_set_user_metadata(const char *const *keys, const char *const *values,
+                                             size_t count) {
+    return with_client_or_buffer(
+        [&](tombstone::Client &client) {
+            return client.set_user_metadata(keys, values, count);
+        },
+        [&](tombstone::PreInitStore &store) {
+            if (count > 0 && (keys == nullptr || values == nullptr)) {
+                return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+            }
+            // Clamp at buffer time so a pre-init caller can't grow the store
+            // unbounded; an empty result is a remembered CLEAR (replace semantics).
+            store.set_user_metadata(tombstone::clamp_user_metadata(keys, values, count));
+            return TOMBSTONE_OK;
+        });
 }
 
 tombstone_result tombstone_set_server_info(const char *region, const char *hostname) {
@@ -150,21 +292,61 @@ void tombstone_end_match(tombstone_handle * /*handle*/) {
 }
 
 tombstone_result tombstone_add_breadcrumb(tombstone_level level, const char *message) {
-    return with_client(
-        [&](tombstone::Client &client) { return client.add_breadcrumb(level, message); });
+    return with_client_or_buffer(
+        [&](tombstone::Client &client) { return client.add_breadcrumb(level, message); },
+        [&](tombstone::PreInitStore &store) {
+            if (message == nullptr || message[0] == '\0') {
+                return TOMBSTONE_ERROR_INVALID_ARGUMENT;  // same contract as the live call
+            }
+            store.add_breadcrumb(static_cast<int>(level), message);
+            return TOMBSTONE_OK;
+        });
 }
 
 tombstone_result tombstone_track_event(const char *name, const char *const *keys,
                                        const char *const *values, size_t count) {
-    return with_client([&](tombstone::Client &client) {
-        return client.track_event(name, keys, values, count);
-    });
+    return with_client_or_buffer(
+        [&](tombstone::Client &client) {
+            return client.track_event(name, keys, values, count);
+        },
+        [&](tombstone::PreInitStore &store) {
+            if (name == nullptr || name[0] == '\0') {
+                return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+            }
+            if (count > 0 && (keys == nullptr || values == nullptr)) {
+                return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+            }
+            std::vector<std::pair<std::string, std::string>> attributes;
+            attributes.reserve(count);
+            for (size_t i = 0; i < count; ++i) {
+                if (keys[i] == nullptr || keys[i][0] == '\0') {
+                    continue;  // mirrors the live call: skip unusable entries
+                }
+                attributes.emplace_back(keys[i], values[i] != nullptr ? values[i] : "");
+            }
+            (void)store.add_event(name, std::move(attributes));  // drop-newest at cap
+            return TOMBSTONE_OK;
+        });
 }
 
 void tombstone_track_metric(tombstone_handle * /*handle*/, const char *name, double value,
                             const char *unit) {
+    (void)with_client_or_buffer(
+        [&](tombstone::Client &client) { return client.track_metric(name, value, unit); },
+        [&](tombstone::PreInitStore &store) {
+            if (name == nullptr || name[0] == '\0' || !std::isfinite(value)) {
+                return TOMBSTONE_ERROR_INVALID_ARGUMENT;  // same contract as the live call
+            }
+            (void)store.add_metric(name, value, unit != nullptr ? unit : "");
+            return TOMBSTONE_OK;
+        });
+}
+
+void tombstone_report_frame(double frame_ms) {
+    // Never buffered: a pre-init frame window has no session to describe.
     (void)with_client([&](tombstone::Client &client) {
-        return client.track_metric(name, value, unit);
+        client.report_frame(frame_ms);
+        return TOMBSTONE_OK;
     });
 }
 

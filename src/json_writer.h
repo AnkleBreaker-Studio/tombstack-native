@@ -50,6 +50,11 @@ public:
      *  (no quoting/escaping). Used to splice pre-built items into a batch. */
     void raw_element(std::string_view raw);
 
+    /** Emit an already-serialized JSON value as a named field (`"name":<raw>`),
+     *  verbatim (no quoting/escaping of the value). Used to splice a pre-built
+     *  object — e.g. the heartbeat `metadata` map — without re-parsing it. */
+    void raw_field(std::string_view name, std::string_view raw);
+
     /** The serialized document so far. Valid once every begin_* is closed. */
     const std::string &str() const noexcept { return out_; }
 

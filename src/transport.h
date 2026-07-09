@@ -14,6 +14,10 @@ struct HttpResponse {
     bool transport_error{true};
     long status{0};
     std::string body;
+    /** Raw value of the response's Retry-After header ("" when absent). The
+     *  worker parses the seconds form on 429/503 and raises its backoff to it
+     *  (capped — see retry_after.h). Untrimmed; the parser tolerates OWS/CRLF. */
+    std::string retry_after;
 };
 
 /**

@@ -46,6 +46,10 @@ constexpr std::size_t pull_nonce = 256;       // server pullFulfillSchema nonce 
 constexpr std::size_t environment = 64;       // deployment environment ("production" server default)
 constexpr std::size_t region = 64;            // fleet label, heartbeats only
 constexpr std::size_t hostname = 255;         // fleet label, heartbeats only
+// per-user metadata map (server user-metadata.ts MAX_USER_METADATA_*), heartbeats only
+constexpr std::size_t user_metadata_keys = 16;
+constexpr std::size_t user_metadata_key = 64;
+constexpr std::size_t user_metadata_value = 512;
 // device object maxima (server deviceSchema; crash/bug/heartbeat bodies)
 constexpr std::size_t device_model = 256;
 constexpr std::size_t device_type = 32;
@@ -97,6 +101,28 @@ struct DevicePayload {
 
 /** True when at least one device field is set (i.e. a `device` object would be emitted). */
 bool device_has_content(const DevicePayload &device) noexcept;
+
+/** Per-user metadata entries in insertion order (a flat string -> string map). */
+using UserMetadataEntries = std::vector<std::pair<std::string, std::string>>;
+
+/**
+ * Clamp caller-supplied metadata to the wire contract (server user-metadata.ts):
+ * at most user_metadata_keys pairs (first-seen keys win, matching the server's
+ * cleanUserMetadata), keys/values UTF-8-safe truncated to user_metadata_key /
+ * user_metadata_value, NULL/empty keys and values skipped (an empty value means
+ * "unset" server-side), and a duplicate key updates in place (last value wins).
+ * NULL arrays / count 0 return an empty map (= a clear).
+ */
+UserMetadataEntries clamp_user_metadata(const char *const *keys, const char *const *values,
+                                        std::size_t count);
+
+/**
+ * Serialize a metadata map to its canonical `metadata` JSON object — `{}` when
+ * empty (the explicit "clear" the server deletes the stored record on). The
+ * client compares these strings for heartbeat change detection AND splices the
+ * same string onto the beat, so comparison and wire bytes can never diverge.
+ */
+std::string build_user_metadata_json(const UserMetadataEntries &entries);
 
 struct CrashPayload {
     std::string occurred_at_iso;
@@ -176,6 +202,18 @@ struct HeartbeatPayload {
     std::string os;
     std::string arch;
     std::string user_id;   // empty -> omitted
+    /** Pre-serialized `metadata` object (build_user_metadata_json), spliced
+     *  verbatim. "{}" is the explicit clear; empty string -> field omitted
+     *  (carried only when it differs from the last acked map). */
+    std::string metadata_json;
+    // Per-interval frame statistics (heartbeat-schema.ts optionals), spliced
+    // only when has_frame_stats (>= 1 frame sampled). Values pre-clamped by
+    // the FrameAccumulator; hitchCount/worstFrameMs are JSON integers.
+    bool has_frame_stats{false};
+    double fps_avg{0.0};
+    double slow_frame_pct{0.0};
+    long long hitch_count{0};
+    long long worst_frame_ms{0};
     std::string role;      // "client"/"server"; empty -> omitted
     std::string server_id; // empty -> omitted
     std::string match_id;  // empty -> omitted

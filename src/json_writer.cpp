@@ -120,6 +120,11 @@ void JsonWriter::raw_element(std::string_view raw) {
     out_.append(raw.data(), raw.size());
 }
 
+void JsonWriter::raw_field(std::string_view name, std::string_view raw) {
+    name_prefix(name);
+    out_.append(raw.data(), raw.size());
+}
+
 void JsonWriter::element_prefix() {
     if (!needs_comma_.empty()) {
         if (needs_comma_.back()) {

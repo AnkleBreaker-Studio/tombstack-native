@@ -110,6 +110,52 @@ void device_object(JsonWriter &json, const DevicePayload &device) {
 
 }  // namespace
 
+UserMetadataEntries clamp_user_metadata(const char *const *keys, const char *const *values,
+                                        std::size_t count) {
+    UserMetadataEntries out;
+    if (keys == nullptr || values == nullptr || count == 0) {
+        return out;  // a clear
+    }
+    out.reserve(count < limits::user_metadata_keys ? count : limits::user_metadata_keys);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (keys[i] == nullptr || keys[i][0] == '\0') {
+            continue;  // unusable key
+        }
+        if (values[i] == nullptr || values[i][0] == '\0') {
+            continue;  // empty value = "unset" server-side; never serialized
+        }
+        std::string key{utf8_safe_truncate(keys[i], limits::user_metadata_key)};
+        std::string value{utf8_safe_truncate(values[i], limits::user_metadata_value)};
+        bool replaced = false;
+        for (auto &entry : out) {
+            if (entry.first == key) {
+                entry.second = std::move(value);  // duplicate key: last value wins
+                replaced = true;
+                break;
+            }
+        }
+        if (replaced) {
+            continue;
+        }
+        if (out.size() >= limits::user_metadata_keys) {
+            break;  // cap: first-seen keys win (mirrors the server cleanUserMetadata)
+        }
+        out.emplace_back(std::move(key), std::move(value));
+    }
+    return out;
+}
+
+std::string build_user_metadata_json(const UserMetadataEntries &entries) {
+    JsonWriter json;
+    json.begin_object();
+    for (const auto &[key, value] : entries) {
+        json.string_field(utf8_safe_truncate(key, limits::user_metadata_key),
+                          utf8_safe_truncate(value, limits::user_metadata_value));
+    }
+    json.end_object();
+    return json.str();
+}
+
 bool device_has_content(const DevicePayload &device) noexcept {
     return !device.model.empty() || !device.type.empty() || !device.os.empty() ||
            !device.os_family.empty() || !device.cpu.empty() || device.cpu_count > 0 ||
@@ -226,6 +272,23 @@ std::string build_heartbeat_json(const HeartbeatPayload &payload) {
     json.string_field("os", payload.os);
     json.string_field("arch", payload.arch);
     optional_field(json, "userId", payload.user_id, limits::user_id);
+    // Per-user custom metadata (tombstone_set_user_metadata): a pre-serialized
+    // JSON object spliced verbatim (the client compares the same string for
+    // change detection, so wire bytes and baseline can never diverge). Carried
+    // only when the map changed since the last acked beat; "{}" is the explicit
+    // clear the server deletes the stored record on. Empty -> omitted.
+    if (!payload.metadata_json.empty()) {
+        json.raw_field("metadata", payload.metadata_json);
+    }
+    // Per-interval frame statistics (heartbeat-schema.ts optionals): present
+    // only when >= 1 frame was sampled this interval. hitchCount/worstFrameMs
+    // are JSON integers; all values pre-clamped by the FrameAccumulator.
+    if (payload.has_frame_stats) {
+        json.number_field("fpsAvg", payload.fps_avg);
+        json.number_field("slowFramePct", payload.slow_frame_pct);
+        json.int_field("hitchCount", payload.hitch_count);
+        json.int_field("worstFrameMs", payload.worst_frame_ms);
+    }
     // serverContextFields: role/serverId/matchId (the server registers Fleet
     // servers and selects pull requests from these). sessionId is already a
     // required top-level field above, so it is not part of this subset. Each is

@@ -591,3 +591,123 @@ TEST_CASE("payloads", "event stamps correlation dimensions after attributes") {
     CHECK(json.find("\"role\"") == std::string::npos);
     CHECK(json.find("\"serverId\"") == std::string::npos);
 }
+
+TEST_CASE("payloads", "user metadata clamps count, lengths, and skips empties") {
+    // 20 candidate pairs; k17..k19 must fall past the 16-key cap. k2 has an
+    // empty value (= "unset", skipped) and k3 a NULL value; the empty-string
+    // key is skipped too, so the cap counts only usable entries.
+    std::vector<std::string> key_storage;
+    std::vector<std::string> value_storage;
+    for (int i = 0; i < 20; ++i) {
+        key_storage.push_back("k" + std::to_string(i));
+        value_storage.push_back("v" + std::to_string(i));
+    }
+    std::vector<const char *> keys;
+    std::vector<const char *> values;
+    for (int i = 0; i < 20; ++i) {
+        keys.push_back(key_storage[i].c_str());
+        values.push_back(value_storage[i].c_str());
+    }
+    values[2] = "";       // empty value -> skipped
+    values[3] = nullptr;  // NULL value -> skipped
+    keys[4] = "";         // empty key -> skipped
+    const tombstone::UserMetadataEntries entries =
+        tombstone::clamp_user_metadata(keys.data(), values.data(), keys.size());
+    CHECK_EQ(entries.size(), tombstone::limits::user_metadata_keys);
+    CHECK_EQ(entries.front().first, std::string{"k0"});
+    // The 3 skipped slots freed room through k18; k19 fell past the cap.
+    CHECK_EQ(entries.back().first, std::string{"k18"});
+
+    // Key/value length clamps (UTF-8-safe truncation to 64 / 512 bytes).
+    const std::string long_key(100, 'K');
+    const std::string long_value(600, 'V');
+    const char *one_key[] = {long_key.c_str()};
+    const char *one_value[] = {long_value.c_str()};
+    const tombstone::UserMetadataEntries clamped =
+        tombstone::clamp_user_metadata(one_key, one_value, 1);
+    CHECK_EQ(clamped.size(), std::size_t{1});
+    CHECK_EQ(clamped[0].first.size(), tombstone::limits::user_metadata_key);
+    CHECK_EQ(clamped[0].second.size(), tombstone::limits::user_metadata_value);
+
+    // A duplicate key updates in place (last value wins), never a second entry.
+    const char *dup_keys[] = {"displayName", "displayName"};
+    const char *dup_values[] = {"Alpha", "Beta"};
+    const tombstone::UserMetadataEntries deduped =
+        tombstone::clamp_user_metadata(dup_keys, dup_values, 2);
+    CHECK_EQ(deduped.size(), std::size_t{1});
+    CHECK_EQ(deduped[0].second, std::string{"Beta"});
+
+    // NULL arrays / zero count are a clear.
+    CHECK(tombstone::clamp_user_metadata(nullptr, nullptr, 0).empty());
+    CHECK(tombstone::clamp_user_metadata(nullptr, nullptr, 5).empty());
+}
+
+TEST_CASE("payloads", "user metadata json is byte-exact and escapes values") {
+    CHECK_EQ(tombstone::build_user_metadata_json({}), std::string{"{}"});
+    tombstone::UserMetadataEntries entries;
+    entries.emplace_back("displayName", "Night \"Reaper\"");
+    entries.emplace_back("clan", "Reapers");
+    CHECK_EQ(tombstone::build_user_metadata_json(entries),
+             std::string{R"({"displayName":"Night \"Reaper\"","clan":"Reapers"})"});
+}
+
+TEST_CASE("payloads", "heartbeat splices metadata and frame stats after userId") {
+    // Field order mirrors the server heartbeatSchema: userId, metadata, the four
+    // frame-stat numbers (hitchCount/worstFrameMs as JSON integers), then the
+    // serverContextFields. The metadata object is spliced verbatim.
+    HeartbeatPayload payload;
+    payload.session_id = "a1b2c3d4";
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.user_id = "player-7";
+    payload.metadata_json = R"({"displayName":"Reaper"})";
+    payload.has_frame_stats = true;
+    payload.fps_avg = 59.5;
+    payload.slow_frame_pct = 12.5;
+    payload.hitch_count = 3;
+    payload.worst_frame_ms = 412;
+    payload.role = "client";
+    CHECK_EQ(build_heartbeat_json(payload),
+             std::string{R"({"sessionId":"a1b2c3d4",)"
+                         R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                         R"("userId":"player-7",)"
+                         R"("metadata":{"displayName":"Reaper"},)"
+                         R"("fpsAvg":59.5,"slowFramePct":12.5,)"
+                         R"("hitchCount":3,"worstFrameMs":412,)"
+                         R"("role":"client"})"});
+}
+
+TEST_CASE("payloads", "heartbeat carries an explicit metadata clear and omits when unset") {
+    // "{}" is the explicit clear (the server deletes the stored record on it)...
+    HeartbeatPayload clear_beat;
+    clear_beat.session_id = "a1b2c3d4";
+    clear_beat.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    clear_beat.build_version = "1.0.0";
+    clear_beat.os = "windows";
+    clear_beat.arch = "x64";
+    clear_beat.role = "client";
+    clear_beat.metadata_json = "{}";
+    const std::string clear_json = build_heartbeat_json(clear_beat);
+    CHECK(clear_json.find(R"("metadata":{},)") != std::string::npos);
+
+    // ...while an unchanged/absent map omits the field (and no frame stats
+    // means no frame fields), keeping the body byte-identical to pre-0.7.
+    HeartbeatPayload plain;
+    plain.session_id = "a1b2c3d4";
+    plain.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    plain.build_version = "1.0.0";
+    plain.os = "windows";
+    plain.arch = "x64";
+    plain.role = "client";
+    const std::string plain_json = build_heartbeat_json(plain);
+    CHECK_EQ(plain_json, std::string{R"({"sessionId":"a1b2c3d4",)"
+                                     R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                                     R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                                     R"("role":"client"})"});
+    CHECK(plain_json.find("\"metadata\"") == std::string::npos);
+    CHECK(plain_json.find("\"fpsAvg\"") == std::string::npos);
+    CHECK(plain_json.find("\"hitchCount\"") == std::string::npos);
+}

@@ -17,6 +17,15 @@
  * (tombstone_report_crash) and detects unclean shutdowns across launches.
  * It does NOT install signal/SEH handlers or write minidumps — that arrives
  * in Phase 2 via a sentry-native/Crashpad fork (see README roadmap).
+ *
+ * Pre-init capture (v0.7): tombstone_add_breadcrumb / tombstone_track_event /
+ * tombstone_track_metric / tombstone_set_user / tombstone_set_environment /
+ * tombstone_set_user_metadata / tombstone_set_consent /
+ * tombstone_start_session called BEFORE tombstone_init BUFFER (bounded:
+ * breadcrumbs 64 drop-oldest; events+metrics 128 combined drop-newest;
+ * last-write-wins for identity/environment/metadata/consent) and are replayed
+ * in order at init, AFTER the options are applied — an explicit pre-init Set*
+ * beats the matching init option.
  */
 
 #include <stddef.h>
@@ -103,6 +112,13 @@ typedef struct tombstone_options {
     int enable_unclean_shutdown_detection;
     /** Nonzero (default) = capture starts immediately. 0 = wait for tombstone_set_consent(1). */
     int consent_granted;
+    /** Nonzero (default) = the SDK begins SENDING immediately at init (today's
+     *  behavior). 0 = defer the first heartbeat and all event/metric batch
+     *  uploads until tombstone_start_session(): without the gate the first
+     *  beat leaves as an anonymous "production" session before the game has
+     *  set identity / environment / metadata. Crash and bug reports are never
+     *  deferred. */
+    int auto_start_session;
     /** Nonzero (default) = emit a `tombstone.rtt_ms` metric after each successful ingest
      *  POST (the upload round-trip time). 0 disables this self-telemetry. */
     int enable_rtt_metric;
@@ -133,14 +149,49 @@ TOMBSTONE_API tombstone_result tombstone_shutdown(void);
 /**
  * Attribute subsequent payloads to a player. Values are clamped to the wire
  * contract (user_id 128, steam_id 32 chars). Pass NULL to clear either.
+ * Changing to a DIFFERENT user id also drops the per-user metadata map (see
+ * tombstone_set_user_metadata) so one player's attributes never bleed onto
+ * the next; an anonymous -> id login keeps it.
  */
 TOMBSTONE_API tombstone_result tombstone_set_user(const char *user_id, const char *steam_id);
+
+/**
+ * Replace the per-user metadata map (a displayName + any studio-defined
+ * string attributes), carried as the `metadata` object on session heartbeats
+ * with change detection: a beat carries the map only when it differs from the
+ * last map a heartbeat delivered, and clearing sends `{}` once so the server
+ * deletes the stored record. REPLACE semantics: every call swaps the whole
+ * map; pass NULL/0 to clear it. `keys`/`values` are parallel arrays of length
+ * `count`, clamped to the wire contract (at most 16 pairs, keys <= 64 bytes,
+ * values <= 512 bytes, UTF-8-safe); NULL/empty keys or values are skipped (an
+ * empty value means "unset" server-side). The reserved key "displayName"
+ * becomes the player's primary label in the dashboard. The map is keyed to
+ * the current user: tombstone_set_user to a different id drops it.
+ */
+TOMBSTONE_API tombstone_result tombstone_set_user_metadata(const char *const *keys,
+                                                           const char *const *values,
+                                                           size_t count);
 
 /**
  * Toggle capture + upload (store policy / GDPR). While 0, nothing is recorded
  * or sent — breadcrumbs, heartbeats, events, and reports are all ignored.
  */
 TOMBSTONE_API tombstone_result tombstone_set_consent(int granted);
+
+/**
+ * Release the send gate: begin heartbeats and event/metric batch uploads. A
+ * one-way idempotent latch — the first call wins, repeats are no-ops (both
+ * return TOMBSTONE_OK). Meaningful with tombstone_options.auto_start_session
+ * set to 0, which holds the gate so the game can call tombstone_set_user /
+ * tombstone_set_environment / tombstone_set_user_metadata FIRST: without it
+ * the first heartbeat leaves as an anonymous "production" session before the
+ * game has configured identity. While the gate is held the heartbeat loop
+ * sends NOTHING and event/metric batch drains are held (items still buffer,
+ * bounded, and ship once started); crash and bug reports still send — their
+ * write-ahead path is never deferred. Calling this BEFORE tombstone_init is
+ * remembered: the latch survives into init regardless of auto_start_session.
+ */
+TOMBSTONE_API tombstone_result tombstone_start_session(void);
 
 /**
  * Set the deployment environment (e.g. "production", "staging", "dev"),
@@ -277,6 +328,19 @@ TOMBSTONE_API tombstone_result tombstone_track_event(const char *name,
  */
 TOMBSTONE_API void tombstone_track_metric(tombstone_handle *h, const char *name, double value,
                                           const char *unit);
+
+/**
+ * Feed one rendered frame's duration (milliseconds) into the frame-stats
+ * accumulator — call once per frame from the render/game loop. Allocation-
+ * free and lock-light (a brief spinlock), built to be called every frame.
+ * Each heartbeat drains the accumulated window onto the beat as `fpsAvg`,
+ * `slowFramePct` (frames > 33.4 ms — a missed 30 FPS budget), `hitchCount`
+ * (frames > 250 ms — a visible hitch on any target) and `worstFrameMs`, then
+ * resets for the next interval (all values clamped to the wire contract).
+ * Non-finite and <= 0 samples are ignored. Fail-soft: a no-op before init or
+ * while consent is off. Dedicated servers with no rendering never call it.
+ */
+TOMBSTONE_API void tombstone_report_frame(double frame_ms);
 
 /**
  * Report a crash. `signature` groups occurrences (clamped to 128 chars); pass

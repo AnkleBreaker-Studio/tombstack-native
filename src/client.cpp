@@ -117,6 +117,10 @@ tombstone_result Client::init(const tombstone_options &options) {
     unclean_detection_enabled_ = options.enable_unclean_shutdown_detection != 0;
     rtt_metric_enabled_ = options.enable_rtt_metric != 0;
     consent_ = options.consent_granted != 0;
+    // v0.7 send gate: nonzero (default) latches immediately — today's behavior.
+    // 0 defers heartbeats + batch drains until start_session(); a pre-init
+    // tombstone_start_session() is replayed by the C layer right after init.
+    collecting_started_ = options.auto_start_session != 0;
 
     const int interval = options.heartbeat_interval_s > 0 ? options.heartbeat_interval_s
                                                           : default_heartbeat_interval_s;
@@ -250,7 +254,10 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
 void Client::heartbeat_loop() {
     std::unique_lock<std::mutex> lock(heartbeat_mutex_);
     while (!heartbeat_stop_) {
-        if (capture_allowed()) {
+        // v0.7 send gate: no beat leaves before start_session() — otherwise the
+        // first heartbeat registers an anonymous "production" session before the
+        // game has set identity/environment/metadata.
+        if (capture_allowed() && collecting_started_.load(std::memory_order_relaxed)) {
             try {
                 HeartbeatPayload payload;
                 payload.session_id = session_id_;
@@ -281,6 +288,31 @@ void Client::heartbeat_loop() {
                         carrying_device = true;
                     }
                 }
+                // Per-user metadata (change detection, Unity M1): carry the map
+                // only when its canonical JSON differs from the last one a beat
+                // ACKED — a steady map costs no repeat server writes, a clear
+                // sends "{}" once. The in-flight json/epoch commit on the next
+                // heartbeat ack; a set_user epoch bump voids a stale commit (M2).
+                {
+                    const std::lock_guard<std::mutex> md_lock(metadata_mutex_);
+                    std::string current = build_user_metadata_json(user_metadata_);
+                    if (current != metadata_last_acked_json_) {
+                        metadata_in_flight_json_ = current;
+                        metadata_in_flight_epoch_ = metadata_epoch_;
+                        payload.metadata_json = std::move(current);
+                    }
+                }
+                // Frame stats: drain this interval's window onto the beat and
+                // reset (omitted entirely when no frame was sampled — dedicated
+                // servers and menus without report_frame calls stay clean).
+                const FrameStatsSnapshot frames = frame_stats_.consume();
+                if (frames.valid) {
+                    payload.has_frame_stats = true;
+                    payload.fps_avg = frames.fps_avg;
+                    payload.slow_frame_pct = frames.slow_frame_pct;
+                    payload.hitch_count = frames.hitch_count;
+                    payload.worst_frame_ms = frames.worst_frame_ms;
+                }
                 UploadJob job;
                 job.url = endpoint_ + heartbeats_path;
                 job.body = build_heartbeat_json(payload);
@@ -295,7 +327,9 @@ void Client::heartbeat_loop() {
                 sdk_log_.warn(std::string{"heartbeat build failed: "} + e.what());
             }
         }
-        heartbeat_cv_.wait_for(lock, heartbeat_interval_, [this] { return heartbeat_stop_; });
+        heartbeat_cv_.wait_for(lock, heartbeat_interval_,
+                               [this] { return heartbeat_stop_ || heartbeat_kick_; });
+        heartbeat_kick_ = false;  // consumed: the loop top sends the kicked beat now
     }
 }
 
@@ -325,6 +359,21 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
         // before the body/consent early-returns so an empty ack still confirms delivery.
         if (device_carry_in_flight_.exchange(false, std::memory_order_relaxed)) {
             device_sent_on_heartbeat_.store(true, std::memory_order_relaxed);
+        }
+        {
+            // Commit the metadata the delivered beat carried (M1). Voided when
+            // the epoch moved: set_user reset the baseline after this beat was
+            // built, so a pre-change beat must not clobber the new identity's
+            // baseline (M2). Beats are serialized through the one worker queue,
+            // so like the device flag above this tolerates a lost beat by simply
+            // re-carrying on the next one.
+            const std::lock_guard<std::mutex> md_lock(metadata_mutex_);
+            if (metadata_in_flight_epoch_ == metadata_epoch_ &&
+                !metadata_in_flight_json_.empty()) {
+                metadata_last_acked_json_ = metadata_in_flight_json_;
+            }
+            metadata_in_flight_json_.clear();
+            metadata_in_flight_epoch_ = -1;
         }
         if (!capture_allowed() || response_body.empty()) {
             return;
@@ -369,6 +418,45 @@ tombstone_result Client::set_consent(bool granted) {
         breadcrumbs_.clear();
     }
     return TOMBSTONE_OK;
+}
+
+tombstone_result Client::start_session() {
+    // One-way idempotent latch (Unity 0.15 parity): the first call releases the
+    // held heartbeats and batch drains; repeats are no-ops. Kick the heartbeat
+    // loop so the first beat goes out promptly (not up to an interval late) and
+    // wake the worker so batches buffered while deferred drain now.
+    if (!collecting_started_.exchange(true)) {
+        {
+            const std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+            heartbeat_kick_ = true;
+        }
+        heartbeat_cv_.notify_all();
+        if (worker_) {
+            worker_->wake();
+        }
+    }
+    return TOMBSTONE_OK;
+}
+
+tombstone_result Client::set_user_metadata(const char *const *keys, const char *const *values,
+                                           std::size_t count) {
+    if (count > 0 && (keys == nullptr || values == nullptr)) {
+        return TOMBSTONE_ERROR_INVALID_ARGUMENT;
+    }
+    // REPLACE semantics: the whole map is swapped every call (NULL/0 clears),
+    // clamped to the wire contract (16 pairs, key 64, value 512). The heartbeat
+    // change detection against the last acked map decides when it ships.
+    UserMetadataEntries entries = clamp_user_metadata(keys, values, count);
+    const std::lock_guard<std::mutex> lock(metadata_mutex_);
+    user_metadata_ = std::move(entries);
+    return TOMBSTONE_OK;
+}
+
+void Client::report_frame(double frame_ms) {
+    if (!capture_allowed()) {
+        return;  // fail-soft: nothing accumulates before init or while consent is off
+    }
+    frame_stats_.sample(frame_ms);
 }
 
 tombstone_result Client::set_environment(const char *environment) {
@@ -537,12 +625,21 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
 }
 
 void Client::drain_ready_batches() {
+    if (!collecting_started_.load(std::memory_order_relaxed)) {
+        return;  // v0.7 send gate: drains held until start_session (items keep buffering)
+    }
     const auto now = std::chrono::steady_clock::now();
     maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/false, /*suppress_rtt=*/false);
     maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/false, /*suppress_rtt=*/true);
 }
 
 void Client::flush_all_batches() {
+    if (!collecting_started_.load(std::memory_order_relaxed)) {
+        // Send gate held: even the quit/pre-crash force-drain ships nothing —
+        // the game explicitly asked for silence until start_session (crash/bug
+        // report bodies themselves are exempt and already enqueued upstream).
+        return;
+    }
     const auto now = std::chrono::steady_clock::now();
     maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/true, /*suppress_rtt=*/false);
     maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/true, /*suppress_rtt=*/true);

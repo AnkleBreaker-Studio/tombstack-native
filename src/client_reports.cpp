@@ -42,7 +42,23 @@ std::string clamped(const char *value, std::size_t max_bytes) {
 
 tombstone_result Client::set_user(const char *user_id, const char *steam_id) {
     const std::lock_guard<std::mutex> lock(user_mutex_);
-    user_id_ = clamped(user_id, limits::user_id);
+    std::string next = clamped(user_id, limits::user_id);
+    if (next != user_id_) {
+        // Identity change (mirrors Unity M2): reset the metadata ACK baseline to
+        // "{}" so the map re-propagates under the new id, and DROP the map on a
+        // switch away from a real id so one player's displayName/attrs never
+        // bleed onto the next (anonymous -> id keeps it — metadata set just
+        // before the first login must survive). The epoch bump voids an
+        // in-flight commit from a beat built before this change.
+        // Lock order: user_mutex_ -> metadata_mutex_ (nested only here).
+        const std::lock_guard<std::mutex> md_lock(metadata_mutex_);
+        if (!user_id_.empty()) {
+            user_metadata_.clear();
+        }
+        metadata_last_acked_json_ = "{}";
+        ++metadata_epoch_;
+    }
+    user_id_ = std::move(next);
     steam_id_ = clamped(steam_id, limits::steam_id);
     return TOMBSTONE_OK;
 }

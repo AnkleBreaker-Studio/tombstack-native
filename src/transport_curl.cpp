@@ -9,6 +9,7 @@
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <string_view>
 
 namespace tombstone {
 
@@ -45,6 +46,36 @@ extern "C" size_t tombstone_curl_write(char *data, size_t size, size_t count, vo
     return total;
 }
 
+/** Minimal header capture: keep only the Retry-After value (case-insensitive
+ *  name match; the pure parser handles OWS/CRLF trimming and the seconds form).
+ *  Everything else is ignored — the SDK has no other header interest. */
+extern "C" size_t tombstone_curl_header(char *data, size_t size, size_t count, void *out) {
+    auto *retry_after = static_cast<std::string *>(out);
+    const size_t total = size * count;
+    try {
+        const std::string_view line{data, total};
+        constexpr std::string_view name{"retry-after:"};
+        if (line.size() > name.size()) {
+            bool matches = true;
+            for (std::size_t i = 0; i < name.size(); ++i) {
+                const char c = line[i];
+                const char lower =
+                    (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+                if (lower != name[i]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                retry_after->assign(line.substr(name.size()));
+            }
+        }
+    } catch (...) {
+        return 0;  // signal failure to curl
+    }
+    return total;
+}
+
 struct CurlHandleDeleter {
     void operator()(CURL *handle) const noexcept { curl_easy_cleanup(handle); }
 };
@@ -66,8 +97,11 @@ CurlSlist append_header(CurlSlist list, const char *header) {
 
 HttpResponse perform(CURL *handle, SdkLog &sdk_log) {
     std::string body;
+    std::string retry_after;
     curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, tombstone_curl_write);
     curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, tombstone_curl_header);
+    curl_easy_setopt(handle, CURLOPT_HEADERDATA, &retry_after);
     curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L);
 
@@ -82,6 +116,7 @@ HttpResponse perform(CURL *handle, SdkLog &sdk_log) {
     response.transport_error = false;
     response.status = status;
     response.body = std::move(body);
+    response.retry_after = std::move(retry_after);
     return response;
 }
 

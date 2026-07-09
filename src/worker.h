@@ -51,7 +51,8 @@ struct UploadJob {
 
 /**
  * Background delivery thread: drains a bounded queue (drop-oldest), uploads
- * with in-session exponential backoff (2s -> 32s, 5 attempts), classifies
+ * with in-session exponential backoff (2s -> 32s, 5 attempts; a 429/503
+ * Retry-After raises the wait, capped at 300s — see retry_after.h), classifies
  * results (2xx delivered / poison 4xx dropped / 429 + 5xx + network retried),
  * persists durable leftovers as sidecars, chases presigned session-log PUTs,
  * and paces the rolling session-log flush. Owns no payload semantics — the
@@ -119,9 +120,12 @@ private:
     std::chrono::steady_clock::time_point next_wakeup() const;
     void process(UploadJob &job);
     void handle_post_result(UploadJob &job, bool transport_error, long status,
-                            const std::string &response_body);
+                            const std::string &response_body, const std::string &retry_after);
     void schedule_log_put(const UploadJob &job, const std::string &response_body);
-    void retry_or_give_up(UploadJob &job);
+    /** Re-queue with backoff — raised to a server Retry-After (seconds form, on
+     *  429/503; capped at 300 s — see retry_after.h) when larger — or persist /
+     *  drop at max_attempts. `retry_after_seconds` < 0 means "no header". */
+    void retry_or_give_up(UploadJob &job, long retry_after_seconds = -1);
     void persist_leftovers();
 
     Transport &transport_;

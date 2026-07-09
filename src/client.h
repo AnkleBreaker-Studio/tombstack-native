@@ -6,6 +6,7 @@
 #include "batch.h"
 #include "breadcrumb_ring.h"
 #include "dedupe.h"
+#include "frame_stats.h"
 #include "payloads.h"
 #include "sampler.h"
 #include "sdk_log.h"
@@ -52,7 +53,16 @@ public:
 
     tombstone_result set_user(const char *user_id, const char *steam_id);
     tombstone_result set_consent(bool granted);
+    /** Release the send gate (one-way idempotent latch): heartbeats begin and
+     *  held event/metric batch drains resume. See tombstone_start_session(). */
+    tombstone_result start_session();
     tombstone_result set_environment(const char *environment);
+    /** REPLACE the per-user metadata map (clamped; NULL/0 clears). Rides
+     *  heartbeats via change detection against the last acked map. */
+    tombstone_result set_user_metadata(const char *const *keys, const char *const *values,
+                                       std::size_t count);
+    /** Feed one frame's duration (ms) into the frame-stats accumulator. */
+    void report_frame(double frame_ms);
     tombstone_result set_server_info(const char *region, const char *hostname);
     tombstone_result mark_dedicated_server(const char *server_id, const char *region,
                                            const char *hostname);
@@ -169,6 +179,12 @@ private:
     // state
     std::atomic<bool> initialized_{false};
     std::atomic<bool> consent_{true};
+    // v0.7 send gate (Unity 0.15 parity): until this one-way latch is set, the
+    // heartbeat loop sends NOTHING and event/metric batch DRAINS are held
+    // (items keep buffering in the bounded batches); crash/bug reports are
+    // exempt — their write-ahead path never waits on identity. Seeded from
+    // options.auto_start_session at init; start_session() sets it forever.
+    std::atomic<bool> collecting_started_{true};
     std::mutex session_tracking_mutex_;
     bool session_tracking_started_{false};
     std::optional<SessionMarkerData> previous_marker_;
@@ -178,6 +194,23 @@ private:
     mutable std::mutex user_mutex_;
     std::string user_id_;
     std::string steam_id_;
+
+    // Per-user metadata (rides HEARTBEATS with change detection, mirroring the
+    // Unity SDK M1/M2): a beat carries the `metadata` object only when the
+    // current map's canonical JSON differs from the last one a heartbeat ACKED
+    // ("{}" = none/clear). The in-flight json/epoch pair is recorded at beat
+    // build and committed on the next heartbeat 2xx; the epoch is bumped when
+    // set_user changes identity, voiding a stale commit from a pre-change beat.
+    // Lock order: user_mutex_ -> metadata_mutex_ (only nested in set_user).
+    mutable std::mutex metadata_mutex_;
+    UserMetadataEntries user_metadata_;
+    std::string metadata_last_acked_json_{"{}"};
+    long long metadata_epoch_{0};
+    std::string metadata_in_flight_json_;
+    long long metadata_in_flight_epoch_{-1};
+
+    // Frame-stats accumulator (tombstone_report_frame), drained onto each beat.
+    FrameAccumulator frame_stats_;
 
     // multiplayer correlation context (role/serverId/matchId stamped on payloads)
     mutable std::mutex match_mutex_;
@@ -208,6 +241,9 @@ private:
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;
     bool heartbeat_stop_{false};
+    // Raised by start_session() so the first beat goes out promptly instead of
+    // up to one interval late (guarded by heartbeat_mutex_).
+    bool heartbeat_kick_{false};
 };
 
 }  // namespace tombstone

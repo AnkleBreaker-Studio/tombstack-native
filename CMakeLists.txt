@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tombstone VERSION 0.6.0 LANGUAGES C CXX)
+project(tombstone VERSION 0.7.0 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
@@ -70,10 +70,13 @@ set(TOMBSTONE_CORE_SOURCES
   src/breadcrumb_ring.cpp
   src/clock.cpp
   src/dedupe.cpp
+  src/frame_stats.cpp
   src/json_scan.cpp
   src/json_writer.cpp
   src/payloads.cpp
   src/platform.cpp
+  src/preinit.cpp
+  src/retry_after.cpp
   src/sampler.cpp
   src/sdk_log.cpp
   src/session_log.cpp
@@ -156,9 +159,12 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_breadcrumb_ring.cpp
     tests/test_clock.cpp
     tests/test_dedupe.cpp
+    tests/test_frame_stats.cpp
     tests/test_json_scan.cpp
     tests/test_json_writer.cpp
     tests/test_payloads.cpp
+    tests/test_preinit.cpp
+    tests/test_retry_after.cpp
     tests/test_sampler.cpp
     tests/test_session_log.cpp
     tests/test_session_marker.cpp
@@ -174,8 +180,8 @@ if(TOMBSTONE_BUILD_TESTS)
   target_link_libraries(tombstone_tests PRIVATE Threads::Threads tombstone_warnings)
 
   foreach(suite
-      batch breadcrumb_ring clock dedupe json_scan json_writer
-      payloads sampler session_log session_marker sidecar signature)
+      batch breadcrumb_ring clock dedupe frame_stats json_scan json_writer
+      payloads preinit retry_after sampler session_log session_marker sidecar signature)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()
 endif()
