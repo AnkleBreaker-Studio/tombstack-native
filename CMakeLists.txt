@@ -158,6 +158,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_batch.cpp
     tests/test_breadcrumb_ring.cpp
     tests/test_clock.cpp
+    tests/test_concurrency.cpp
     tests/test_dedupe.cpp
     tests/test_frame_stats.cpp
     tests/test_json_scan.cpp
@@ -170,6 +171,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_session_marker.cpp
     tests/test_sidecar.cpp
     tests/test_signature.cpp
+    tests/test_start_gate.cpp
     $<TARGET_OBJECTS:tombstone_core>
   )
   target_include_directories(tombstone_tests PRIVATE
@@ -180,8 +182,9 @@ if(TOMBSTONE_BUILD_TESTS)
   target_link_libraries(tombstone_tests PRIVATE Threads::Threads tombstone_warnings)
 
   foreach(suite
-      batch breadcrumb_ring clock dedupe frame_stats json_scan json_writer
-      payloads preinit retry_after sampler session_log session_marker sidecar signature)
+      batch breadcrumb_ring clock concurrency dedupe frame_stats json_scan json_writer
+      payloads preinit retry_after sampler session_log session_marker sidecar signature
+      start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()
 endif()
