@@ -42,6 +42,9 @@ clean quit. That's the whole integration; everything else is automatic.
 | Deployment environment / fleet labels / device specs ride the relevant payloads once set | `tombstone_set_environment` — tag prod/staging/dev |
 | Dedicated servers register in the Fleet even without matches | `tombstone_mark_dedicated_server` — server identity + fleet labels |
 | Player-profile Hardware view (specs even on non-crashing sessions) | `tombstone_set_device` — hand the SDK your CPU/GPU/RAM/display |
+| Pre-init calls buffer (bounded) and replay at init — nothing set before `tombstone_init` is lost | `tombstone_start_session` — release the first-beat gate (`auto_start_session = 0`) |
+| Frame stats ride each heartbeat (fps avg / slow-frame % / hitches / worst frame) | `tombstone_report_frame` — feed one frame's ms per frame |
+| Server `Retry-After` honored on 429/503 (raises backoff, capped at 300 s) | `tombstone_set_user_metadata` — displayName + custom player attributes |
 
 Multiplayer & fleet: `tombstone_set_match_context` / `tombstone_start_match` / `tombstone_end_match`
 correlate a match; `tombstone_mark_dedicated_server(server_id, region, hostname)` marks a dedicated
@@ -49,6 +52,11 @@ server (flips role to `server`) without needing a match; `tombstone_set_server_i
 hostname)` sets fleet labels. `tombstone_set_environment("staging")` tags every payload;
 `tombstone_set_device(&specs)` attaches hardware specs (the SDK never probes — you hand it what
 your engine already knows) to crashes, bug reports, and the session's first heartbeat.
+
+Identity-first startup: set `opt.auto_start_session = 0`, configure
+`tombstone_set_user` / `tombstone_set_environment` / `tombstone_set_user_metadata`, then call
+`tombstone_start_session()` — otherwise the first heartbeat registers an anonymous "production"
+session before the game has said who is playing. Crash/bug reports are never held by the gate.
 
 Every call returns a `tombstone_result`; nothing ever throws across the ABI,
 and the SDK never writes to stdout/stderr (wire a `log_callback` to see its

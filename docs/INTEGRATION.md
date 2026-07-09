@@ -13,7 +13,38 @@ the same four steps:
    handler), `tombstone_flush` + `tombstone_shutdown` on clean exit.
 
 Threading: every call is thread-safe; uploads happen on a background thread,
-never on the caller's. Nothing throws across the ABI.
+never on the caller's. Nothing throws across the ABI. Calls made *before*
+`tombstone_init` buffer (bounded) and replay at init, so early breadcrumbs,
+events, and Set* calls are never lost.
+
+## Identity-first startup (recommended)
+
+By default the first heartbeat leaves the moment `tombstone_init` returns —
+as an *anonymous, "production"* session. If you know who is playing (or which
+environment you are in), hold the first beat until you have said so:
+
+```c
+tombstone_options opt;
+tombstone_options_init(&opt);
+opt.endpoint = "https://your-tenant.example.com";
+opt.token = "tmb_...";
+opt.build_version = "1.4.2";
+opt.auto_start_session = 0;               /* hold heartbeats + batches */
+tombstone_init(&opt);
+
+tombstone_set_user("player-123", NULL);   /* identity first */
+tombstone_set_environment("staging");
+const char *mk[] = {"displayName"};
+const char *mv[] = {"Reaper"};
+tombstone_set_user_metadata(mk, mv, 1);
+
+tombstone_start_session();                /* NOW the first beat leaves */
+```
+
+`tombstone_start_session()` is a one-way idempotent latch; crash and bug
+reports are never held by it. Per-frame performance: call
+`tombstone_report_frame(frame_ms)` once per frame and each heartbeat carries
+that interval's fps average / slow-frame % / hitch count / worst frame.
 
 ## Unreal Engine
 

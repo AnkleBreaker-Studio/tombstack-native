@@ -2,6 +2,53 @@
 
 All notable changes to the Tombstone Native SDK.
 
+## [0.7.0] - 2026-07-09
+
+### Added — Unity-parity pass (StartSession gate, metadata, frame stats, Retry-After, pre-init)
+
+- **StartSession first-beat gate (Unity 0.15.0 parity)** — new option
+  `tombstone_options.auto_start_session` (default 1 = today's behavior) + new API
+  `tombstone_result tombstone_start_session(void)`, a one-way idempotent latch. With
+  `auto_start_session = 0`, the heartbeat loop sends NOTHING and event/metric batch drains are
+  HELD (items keep buffering, bounded) until `tombstone_start_session()` — so the first beat no
+  longer registers an anonymous "production" session before the game sets identity / environment /
+  metadata. Crash and bug reports are exempt (their write-ahead path never waits). Calling
+  `tombstone_start_session()` before init is remembered and survives into init. The first beat
+  after the latch is kicked out promptly (not up to one interval late). NOTE: the options struct
+  grew a field — consumers must recompile against the 0.7 header.
+- **Per-user metadata (Unity parity)** — new
+  `tombstone_set_user_metadata(keys, values, count)`: REPLACE semantics (NULL/0 clears), clamped
+  to the server contract (≤ 16 pairs, key ≤ 64, value ≤ 512, mirroring `user-metadata.ts`).
+  Rides HEARTBEATS as the `metadata` object with change detection: a beat carries the map only
+  when it differs from the last map a heartbeat ACKED (commit-on-2xx, M1), a clear sends `{}`
+  once, and a `tombstone_set_user` identity change resets the baseline / drops the map so one
+  player's attributes never bleed onto the next (epoch-guarded against stale acks, M2). The
+  reserved key `displayName` becomes the player's dashboard label.
+- **Frame stats (Unity 0.11 parity)** — new `void tombstone_report_frame(double frame_ms)`:
+  an allocation-free, spinlock-guarded accumulator fed once per frame. Each heartbeat drains
+  the interval's window onto the beat as `fpsAvg` / `slowFramePct` (> 33.4 ms — a missed
+  30 FPS budget) / `hitchCount` (> 250 ms — a visible hitch) / `worstFrameMs`, then resets;
+  all values clamped to the `heartbeat-schema.ts` maxima (1000 / 100 / 1e6 / 1e7). Omitted
+  entirely when no frame was sampled (dedicated servers stay clean).
+- **Retry-After honoring** — the worker now captures the `Retry-After` response header (minimal
+  libcurl header callback) and, on 429/503, raises its exponential backoff to
+  `max(backoff, retry_after)` capped at **300 s** (seconds form only; the HTTP-date form falls
+  back to plain backoff). New pure helpers `parse_retry_after_seconds` / `retry_delay`
+  (`src/retry_after.h`).
+- **Pre-init buffering (Unity 0.9.8 parity)** — `tombstone_add_breadcrumb`,
+  `tombstone_track_event`, `tombstone_track_metric`, `tombstone_set_user`,
+  `tombstone_set_environment`, `tombstone_set_user_metadata`, `tombstone_set_consent`, and
+  `tombstone_start_session` called BEFORE `tombstone_init` now BUFFER instead of failing
+  silent: bounded store (breadcrumbs ≤ 64 drop-oldest; events + metrics ≤ 128 combined
+  drop-newest; last-write-wins for identity / environment / metadata / consent) replayed in
+  order at init AFTER the options are applied — an explicit pre-init Set* beats the matching
+  init option (the Unity clobber fix). Replayed tracks carry replay-time timestamps (the
+  pre-init window is milliseconds in practice).
+
+Wire-compatible: a caller using none of the new APIs produces byte-identical bodies to 0.6.0
+(every new heartbeat field is omitted when unset). New unit suites `frame_stats`, `preinit`,
+`retry_after` + byte-exact metadata/heartbeat payload tests, all wired into CTest.
+
 ## [0.6.0] - 2026-07-04
 
 ### Added — parity with the Unity SDK (deployment env, fleet, device specs)
