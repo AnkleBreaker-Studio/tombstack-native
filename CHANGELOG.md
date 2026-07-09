@@ -1,8 +1,14 @@
 # Changelog
 
-All notable changes to the Tombstone Native SDK.
+All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
+the `tombstone` library name are stable — Tombstack is the product name).
 
 ## [0.7.0] - 2026-07-09
+
+> **ABI note — recompile required:** the `tombstone_options` struct grew a new
+> field (`auto_start_session`) in 0.7.0. Consumers **must recompile against the
+> 0.7 header**; a binary compiled against a 0.6 header must not be run against
+> a 0.7 library.
 
 ### Added — Unity-parity pass (StartSession gate, metadata, frame stats, Retry-After, pre-init)
 

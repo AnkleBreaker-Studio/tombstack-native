@@ -1,14 +1,21 @@
-# Tombstone Native SDK
+# Tombstack Native SDK
 
 Standalone C/C++ crash & telemetry client for **any** game engine — Unreal,
-Godot, custom engines, tools, servers. Ships as a shared library
-(`tombstone.dll` / `libtombstone.so` / `libtombstone.dylib`) with a pure C99
-header, so anything that can call C can use it.
+Godot, custom engines, tools, servers. Built from source with one CMake
+invocation on Windows, Linux, and macOS (CI-proven on all three), as a shared
+library — the build outputs `tombstone.dll` / `libtombstone.so` /
+`libtombstone.dylib` — or a static one, behind a pure C99 header, so anything
+that can call C can use it. Building really is one line:
+`cmake -S . -B build && cmake --build build`.
 
-It speaks the exact same wire protocol as the [Tombstone](https://github.com/AnkleBreaker-Studio)
+> **Naming note:** the product is **Tombstack**; the C symbol prefix stays
+> `tombstone_*` and the library keeps its `tombstone.dll` / `libtombstone`
+> name for ABI stability. No code symbol, file, or build target is renamed.
+
+It speaks the exact same wire protocol as the [Tombstack](https://github.com/AnkleBreaker-Studio)
 Unity SDK: crash reports, player bug reports, analytics events, session
 heartbeats, breadcrumb trails, rolling session logs, and unclean-shutdown
-detection — all against your studio's Tombstone ingestion endpoint with a
+detection — all against your studio's Tombstack ingestion endpoint with a
 per-game SDK token (`tmb_...`).
 
 ## Quick integration (10 lines of C)
@@ -81,7 +88,7 @@ See [docs/INTEGRATION.md](docs/INTEGRATION.md) for per-engine notes and
 Crash and bug payloads are **write-ahead**: persisted to
 `<data_dir>/pending/{crashes,bug-reports,events}/*.json` *before* the first
 upload attempt. Each file is the raw ingest body — no envelope — which makes
-the queue compatible with the standalone uploader from the Tombstone monorepo:
+the queue compatible with the standalone uploader from the Tombstack monorepo:
 
 ```bash
 TOMBSTONE_BASE_URL=https://host TOMBSTONE_TOKEN=tmb_... \

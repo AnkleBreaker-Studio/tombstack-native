@@ -1,4 +1,7 @@
-# Per-engine integration notes
+# Tombstack Native SDK — per-engine integration notes
+
+> The product is **Tombstack**; the `tombstone_*` C symbols and the
+> `tombstone.dll` / `libtombstone` library name are kept for ABI stability.
 
 The SDK is one shared library + one pure C99 header. Integration is always
 the same four steps:
@@ -48,7 +51,7 @@ that interval's fps average / slow-frame % / hitch count / worst frame.
 
 ## Unreal Engine
 
-- Put the header + import lib in a `ThirdParty/Tombstone` module; add the
+- Put the header + import lib in a `ThirdParty/Tombstack` module; add the
   `.lib`/`.so` to `PublicAdditionalLibraries` and stage the runtime library
   with `RuntimeDependencies`.
 - Init in `UGameInstance::Init`; shutdown in `Shutdown`.
@@ -59,7 +62,7 @@ that interval's fps average / slow-frame % / hitch count / worst frame.
   `ReportCrash` path, call `tombstone_report_crash(NULL, summary, callstack, 1)`
   then `tombstone_flush(2000)`. (Unreal's own crash handler still runs;
   Phase 2 minidump capture will integrate beneath it.)
-- `data_dir`: `FPaths::ProjectSavedDir() / TEXT("Tombstone")`.
+- `data_dir`: `FPaths::ProjectSavedDir() / TEXT("Tombstack")`.
 
 ## Godot 4 (GDExtension)
 
@@ -91,7 +94,7 @@ that interval's fps average / slow-frame % / hitch count / worst frame.
 
 Marshal strings as UTF-8 (`CharSet.Ansi` is fine for ASCII; prefer
 `UnmanagedType.LPUTF8Str` on modern runtimes). Unity itself should use the
-official Tombstone Unity SDK instead — it has deeper engine hooks.
+official Tombstack Unity SDK instead — it has deeper engine hooks.
 
 ## Consent / store policy
 
