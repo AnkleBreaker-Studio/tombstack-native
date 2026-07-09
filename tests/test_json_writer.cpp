@@ -1,6 +1,8 @@
 #include "json_writer.h"
 #include "test_framework.h"
 
+#include <clocale>
+
 using tombstone::json_escape;
 using tombstone::JsonWriter;
 using tombstone::utf8_safe_truncate;
@@ -53,6 +55,37 @@ TEST_CASE("json_writer", "builds nested object fields") {
     json.end_object();
     json.end_object();
     CHECK_EQ(json.str(), std::string{R"({"attributes":{"level":"3","boss":"true"}})"});
+}
+
+TEST_CASE("json_writer", "number_field emits a dot decimal separator in the default locale") {
+    JsonWriter json;
+    json.begin_object();
+    json.number_field("v", 0.5);
+    json.number_field("w", 59.75);
+    json.end_object();
+    CHECK_EQ(json.str(), std::string{R"({"v":0.5,"w":59.75})"});
+}
+
+TEST_CASE("json_writer", "number_field stays valid JSON under a comma-decimal locale") {
+    // A host game may call setlocale(LC_NUMERIC, ...) process-wide (localized titles do). %g then
+    // prints a decimal COMMA — invalid JSON that would poison the whole heartbeat body. Verify the
+    // writer normalizes back to '.' (the Unity SDK's InvariantCulture guard, ported). Try the common
+    // spellings per platform; if none is installed on this runner, the check degrades to the default
+    // locale (still asserting valid output) rather than failing on runner configuration.
+    const char *candidates[] = {"de_DE.UTF-8", "de_DE.utf8", "de-DE", "German_Germany.1252", "fr_FR.UTF-8"};
+    const char *previous = std::setlocale(LC_NUMERIC, nullptr);
+    const std::string saved = previous != nullptr ? previous : "C";
+    for (const char *name : candidates) {
+        if (std::setlocale(LC_NUMERIC, name) != nullptr) break;
+    }
+    JsonWriter json;
+    json.begin_object();
+    json.number_field("fpsAvg", 59.75);
+    json.number_field("slowFramePct", 3.5);
+    json.end_object();
+    const std::string body = json.str();
+    std::setlocale(LC_NUMERIC, saved.c_str());
+    CHECK_EQ(body, std::string{R"({"fpsAvg":59.75,"slowFramePct":3.5})"});
 }
 
 TEST_CASE("json_writer", "utf8 truncation never splits a multibyte sequence") {

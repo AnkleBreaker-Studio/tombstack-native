@@ -3,6 +3,17 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
+## [0.7.1] - 2026-07-09
+
+### Fixed — locale-independent JSON number formatting
+`JsonWriter::number_field` used `snprintf("%.17g")`, which honors the process-global
+`LC_NUMERIC`: a host game calling `setlocale(LC_NUMERIC, "de_DE")` (common in localized
+titles) made doubles print a decimal **comma** — invalid JSON that poisoned the entire
+payload the number rode on (the server rejected the whole heartbeat, silently losing
+CCU/metadata/frame stats for every player in that locale). The writer now normalizes the
+locale's decimal separator back to `.` (the Unity SDK's `CultureInfo.InvariantCulture`
+guard, ported), with regression tests covering comma-decimal locales.
+
 ## [0.7.0] - 2026-07-09
 
 > **ABI note — recompile required:** the `tombstone_options` struct grew a new

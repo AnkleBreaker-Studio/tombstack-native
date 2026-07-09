@@ -1,6 +1,8 @@
 #include "json_writer.h"
 
+#include <clocale>
 #include <cstdio>
+#include <cstring>
 
 namespace tombstone {
 
@@ -101,10 +103,27 @@ void JsonWriter::bool_field(std::string_view name, bool value) {
 
 void JsonWriter::number_field(std::string_view name, double value) {
     name_prefix(name);
-    char buffer[32] = {};
+    char buffer[40] = {};
     // %.17g is the shortest round-trip precision for an IEEE-754 double; the
     // caller guarantees finiteness, so "inf"/"nan" never reach the wire.
-    std::snprintf(buffer, sizeof(buffer), "%.17g", value);
+    const int n = std::snprintf(buffer, sizeof(buffer), "%.17g", value);
+    // snprintf honors the process-global LC_NUMERIC: a host game that called
+    // setlocale(LC_NUMERIC, "de_DE") makes %g print a decimal COMMA — invalid
+    // JSON that poisons the ENTIRE payload this field rides on (the server
+    // rejects the whole heartbeat, silently losing CCU/metadata for every
+    // player in that locale). The Unity SDK guards the same hazard with
+    // CultureInfo.InvariantCulture — normalize the locale's decimal separator
+    // back to '.' here. %g never emits digit grouping, so the separator is
+    // the only locale-dependent byte sequence in the output.
+    const char *dp = std::localeconv()->decimal_point;
+    if (n > 0 && dp != nullptr && dp[0] != '\0' && !(dp[0] == '.' && dp[1] == '\0')) {
+        const size_t len = static_cast<size_t>(n) < sizeof(buffer) ? static_cast<size_t>(n) : sizeof(buffer) - 1;
+        std::string s(buffer, len);
+        const size_t pos = s.find(dp);
+        if (pos != std::string::npos) s.replace(pos, std::strlen(dp), ".");
+        out_ += s;
+        return;
+    }
     out_ += buffer;
 }
 
