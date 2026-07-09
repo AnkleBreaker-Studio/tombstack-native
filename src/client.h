@@ -203,7 +203,11 @@ private:
     // ("{}" = none/clear). The in-flight json/epoch pair is recorded at beat
     // build and committed on the next heartbeat 2xx; the epoch is bumped when
     // set_user changes identity, voiding a stale commit from a pre-change beat.
-    // Lock order: user_mutex_ -> metadata_mutex_ (only nested in set_user).
+    // Lock order (never acquire in the reverse direction):
+    //   heartbeat_mutex_ -> user_mutex_ / match_mutex_ / metadata_mutex_
+    //     (heartbeat_loop holds heartbeat_mutex_ across the whole beat build,
+    //     which snapshots user, match context, and metadata under their locks)
+    //   user_mutex_ -> metadata_mutex_ (only nested in set_user)
     mutable std::mutex metadata_mutex_;
     UserMetadataEntries user_metadata_;
     std::string metadata_last_acked_json_{"{}"};

@@ -42,7 +42,7 @@ std::chrono::seconds retry_delay(int attempt, long retry_after_seconds) noexcept
     if (attempt > 5) {
         attempt = 5;  // the worker never exceeds max_attempts; clamp defensively
     }
-    long delay = 2L << (attempt - 1);  // 2 s, 4 s, 8 s, 16 s (matches the pre-0.7 backoff)
+    long delay = 2L << (attempt - 1);  // attempts 1..5: 2 s, 4 s, 8 s, 16 s, 32 s (pre-0.7 ladder)
     if (retry_after_seconds > delay) {
         delay = retry_after_seconds;
     }

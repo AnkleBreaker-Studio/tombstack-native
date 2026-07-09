@@ -330,15 +330,28 @@ TOMBSTONE_API void tombstone_track_metric(tombstone_handle *h, const char *name,
                                           const char *unit);
 
 /**
- * Feed one rendered frame's duration (milliseconds) into the frame-stats
- * accumulator — call once per frame from the render/game loop. Allocation-
- * free and lock-light (a brief spinlock), built to be called every frame.
- * Each heartbeat drains the accumulated window onto the beat as `fpsAvg`,
- * `slowFramePct` (frames > 33.4 ms — a missed 30 FPS budget), `hitchCount`
- * (frames > 250 ms — a visible hitch on any target) and `worstFrameMs`, then
- * resets for the next interval (all values clamped to the wire contract).
- * Non-finite and <= 0 samples are ignored. Fail-soft: a no-op before init or
- * while consent is off. Dedicated servers with no rendering never call it.
+ * Feed one rendered frame's duration into the frame-stats accumulator — call
+ * once per frame from the render/game loop.
+ *
+ * UNITS: `frame_ms` is MILLISECONDS — 16.7 for 60 FPS, 33.3 for 30 FPS.
+ * Passing SECONDS (e.g. a raw 0.0166 delta-time) is NOT detectable and
+ * produces plausible-looking garbage: every frame appears ~1000x faster, so
+ * fpsAvg pins at the 1000 clamp and slow frames / hitches silently vanish.
+ * Double-check the conversion at the call site (`delta_seconds * 1000.0`).
+ *
+ * NOT async-signal-safe: the accumulator takes an internal spinlock. Never
+ * call this from a signal handler, SEH / vectored exception filter, or any
+ * other crash-time context — a handler interrupting the lock holder on the
+ * same thread would spin forever (deadlock).
+ *
+ * Allocation-free and lock-light on the normal path, built to be called
+ * every frame from any regular thread. Each heartbeat drains the accumulated
+ * window onto the beat as `fpsAvg`, `slowFramePct` (frames > 33.4 ms — a
+ * missed 30 FPS budget), `hitchCount` (frames > 250 ms — a visible hitch on
+ * any target) and `worstFrameMs`, then resets for the next interval (all
+ * values clamped to the wire contract). Non-finite and <= 0 samples are
+ * ignored. Fail-soft: a no-op before init or while consent is off. Dedicated
+ * servers with no rendering never call it.
  */
 TOMBSTONE_API void tombstone_report_frame(double frame_ms);
 
