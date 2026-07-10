@@ -115,8 +115,9 @@ typedef struct tombstone_options {
     /** Nonzero (default) = the SDK begins SENDING immediately at init (today's
      *  behavior). 0 = defer the first heartbeat and all event/metric batch
      *  uploads until tombstone_start_session(): without the gate the first
-     *  beat leaves as an anonymous "production" session before the game has
-     *  set identity / environment / metadata. Crash and bug reports are never
+     *  beat leaves as a provisional-identity "production" session before the
+     *  game has set identity / environment / metadata (v0.8: the device-derived
+     *  `dev_...` id, never anonymous). Crash and bug reports are never
      *  deferred. */
     int auto_start_session;
     /** Nonzero (default) = emit a `tombstone.rtt_ms` metric after each successful ingest
@@ -148,10 +149,22 @@ TOMBSTONE_API tombstone_result tombstone_shutdown(void);
 
 /**
  * Attribute subsequent payloads to a player. Values are clamped to the wire
- * contract (user_id 128, steam_id 32 chars). Pass NULL to clear either.
+ * contract (user_id 128, steam_id 32 chars).
+ *
+ * Device identity (v0.8): the SDK never sends an anonymous user. At init it
+ * acquires a persistent device-derived provisional id ("dev_" + 16 lowercase
+ * hex — the machine id hashed salted with the game token; the raw machine id
+ * never goes on the wire), and every payload carries it until you set a real
+ * id. The first tombstone_set_user(real_id) after init upgrades the SAME
+ * session: the provisional id rides heartbeats (and crash/bug bodies) once as
+ * `priorUserId` until a heartbeat is acked, so the server merges the session's
+ * pre-login telemetry under the real player. Passing NULL/empty (logout)
+ * reverts to the provisional id and drops the pending marker — logged-out
+ * telemetry never merges into anyone.
+ *
  * Changing to a DIFFERENT user id also drops the per-user metadata map (see
  * tombstone_set_user_metadata) so one player's attributes never bleed onto
- * the next; an anonymous -> id login keeps it.
+ * the next; a provisional/anonymous -> id login keeps it.
  */
 TOMBSTONE_API tombstone_result tombstone_set_user(const char *user_id, const char *steam_id);
 
@@ -184,8 +197,9 @@ TOMBSTONE_API tombstone_result tombstone_set_consent(int granted);
  * return TOMBSTONE_OK). Meaningful with tombstone_options.auto_start_session
  * set to 0, which holds the gate so the game can call tombstone_set_user /
  * tombstone_set_environment / tombstone_set_user_metadata FIRST: without it
- * the first heartbeat leaves as an anonymous "production" session before the
- * game has configured identity. While the gate is held the heartbeat loop
+ * the first heartbeat leaves as a provisional-identity "production" session
+ * before the game has configured who is playing (v0.8: the device-derived
+ * `dev_...` id — never anonymous). While the gate is held the heartbeat loop
  * sends NOTHING and event/metric batch drains are held (items still buffer,
  * bounded, and ship once started); crash and bug reports still send — their
  * write-ahead path is never deferred. Calling this BEFORE tombstone_init is

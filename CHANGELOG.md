@@ -3,6 +3,36 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
+## [0.8.0] - 2026-07-10
+
+### Added — device identity: the SDK never sends an anonymous user (Unity 0.16 parity)
+
+- **Device-derived provisional user id** — at init the SDK acquires a persistent
+  `"dev_" + 16 lowercase hex` id and every payload carries it as `userId` until the game sets a
+  real id, so sessions, crashes, and telemetry are attributable from the very first beat. The id
+  is `FNV-1a-64(ingestToken + "|" + machineId)`: **the raw machine id never goes on the wire**,
+  and the salt makes the SAME physical machine yield a DIFFERENT id per game (cross-tenant
+  unlinkability). Machine sources: Windows `MachineGuid` (HKLM Cryptography key, 64-bit registry
+  view), Linux `/etc/machine-id`, macOS host UUID (`gethostuuid`); when none is readable the SDK
+  derives from a random source instead (still well-formed, persisted when storage allows). The id
+  is persisted to `<data_dir>/identity` (same directory as the session marker) and **the file wins
+  over a re-derive** on later launches, so the id survives an ingest-token rotation; a corrupt
+  file fails a plausibility gate (`dev_` prefix, ≤ 40 chars, `[a-z0-9_-]`) and re-derives.
+- **Same-session identity upgrade (`priorUserId`)** — when `tombstone_set_user(real_id)` is called
+  while the effective id is still the provisional one, the session id is KEPT and the provisional
+  id is stamped once as `priorUserId` on heartbeats — carried until a beat delivering it gets its
+  2xx ack (commit-on-ack like the device/metadata carries: a dropped beat re-carries) — and on
+  crash/bug bodies while pending, so the server merges the session's pre-login rows under the
+  real player. Setting a NULL/empty user (logout) reverts to the provisional id and clears the
+  pending marker — logged-out telemetry never merges into anyone.
+- New pure core unit `src/device_identity.{h,cpp}` (FNV-1a-64, id derivation, plausibility
+  validation) with a `device_identity` CTest suite pinned to the published FNV vectors, plus
+  byte-exact `priorUserId` present/absent/clamp payload tests.
+
+Wire-compatible: the steady state (a set user, or a session that never authenticates) adds no new
+fields beyond the now-always-present `userId`; `priorUserId` (server schemas already accept it)
+appears only during the one-shot upgrade window.
+
 ## [0.7.1] - 2026-07-09
 
 ### Fixed — locale-independent JSON number formatting

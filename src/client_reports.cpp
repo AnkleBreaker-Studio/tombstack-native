@@ -47,9 +47,9 @@ tombstone_result Client::set_user(const char *user_id, const char *steam_id) {
         // Identity change (mirrors Unity M2): reset the metadata ACK baseline to
         // "{}" so the map re-propagates under the new id, and DROP the map on a
         // switch away from a real id so one player's displayName/attrs never
-        // bleed onto the next (anonymous -> id keeps it — metadata set just
-        // before the first login must survive). The epoch bump voids an
-        // in-flight commit from a beat built before this change.
+        // bleed onto the next (anonymous/provisional -> id keeps it — metadata
+        // set just before the first login must survive). The epoch bump voids
+        // an in-flight commit from a beat built before this change.
         // Lock order: user_mutex_ -> metadata_mutex_ (nested only here).
         const std::lock_guard<std::mutex> md_lock(metadata_mutex_);
         if (!user_id_.empty()) {
@@ -58,6 +58,23 @@ tombstone_result Client::set_user(const char *user_id, const char *steam_id) {
         metadata_last_acked_json_ = "{}";
         ++metadata_epoch_;
     }
+    // v0.8 identity upgrade (Unity 0.16 parity): while the session's effective
+    // id is the device-derived provisional one, the first set_user(real_id)
+    // keeps the SAME session and stamps the provisional id as the one-shot
+    // pending prior — heartbeats (and crash/bug bodies) carry it as
+    // `priorUserId` until a beat delivering it is acked, so the server merges
+    // the pre-auth rows under the real player. A NULL/empty id (logout)
+    // reverts to the provisional id (user_id_ empty = provisional in effect)
+    // and DROPS the marker — logged-out telemetry must never merge into anyone.
+    if (next.empty()) {
+        pending_prior_user_id_.clear();
+    } else if (!provisional_user_id_.empty() && next != provisional_user_id_) {
+        const std::string &current_effective =
+            user_id_.empty() ? provisional_user_id_ : user_id_;
+        if (current_effective == provisional_user_id_) {
+            pending_prior_user_id_ = provisional_user_id_;
+        }
+    }
     user_id_ = std::move(next);
     steam_id_ = clamped(steam_id, limits::steam_id);
     return TOMBSTONE_OK;
@@ -65,12 +82,19 @@ tombstone_result Client::set_user(const char *user_id, const char *steam_id) {
 
 std::string Client::current_user_id() const {
     const std::lock_guard<std::mutex> lock(user_mutex_);
-    return user_id_;
+    // v0.8: never anonymous after init — an unset user falls back to the
+    // device-derived provisional id.
+    return user_id_.empty() ? provisional_user_id_ : user_id_;
 }
 
 std::string Client::current_steam_id() const {
     const std::lock_guard<std::mutex> lock(user_mutex_);
     return steam_id_;
+}
+
+std::string Client::current_prior_user_id() const {
+    const std::lock_guard<std::mutex> lock(user_mutex_);
+    return pending_prior_user_id_;
 }
 
 void Client::record_breadcrumb(std::string_view level, std::string_view message) {
@@ -237,6 +261,10 @@ tombstone_result Client::report_crash(const char *signature, const char *stack_h
     payload.stack_trace = trace;
     payload.breadcrumbs = breadcrumbs_.snapshot();
     payload.user_id = current_user_id();
+    // v0.8: while the provisional -> real-id upgrade marker is pending (no
+    // heartbeat delivered it yet), crash bodies carry it too — a crash right
+    // after login must still merge the session's pre-auth rows.
+    payload.prior_user_id = current_prior_user_id();
     payload.steam_id = current_steam_id();
     payload.log = want_log;
     const MatchContext crash_ctx = current_match_context();
@@ -351,6 +379,7 @@ tombstone_result Client::report_bug(const char *category, const char *message, b
     payload.category = category != nullptr ? category : "";
     payload.message = message;
     payload.user_id = current_user_id();
+    payload.prior_user_id = current_prior_user_id();  // v0.8: pending upgrade marker
     payload.steam_id = current_steam_id();
     payload.breadcrumbs = breadcrumbs_.snapshot();
     payload.log = want_log;

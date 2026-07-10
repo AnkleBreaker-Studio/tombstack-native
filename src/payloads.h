@@ -134,6 +134,7 @@ struct CrashPayload {
     std::string stack_trace;             // empty -> omitted
     std::vector<Breadcrumb> breadcrumbs; // empty -> omitted
     std::string user_id;                 // empty -> omitted
+    std::string prior_user_id;           // pending identity-upgrade marker; empty -> omitted
     std::string steam_id;                // empty -> omitted
     bool log{false};                     // always serialized
     std::string role;                    // "client"/"server"; empty -> omitted
@@ -152,6 +153,7 @@ struct BugReportPayload {
     std::string category;                // empty -> omitted
     std::string message;                 // required (min 1)
     std::string user_id;                 // empty -> omitted
+    std::string prior_user_id;           // pending identity-upgrade marker; empty -> omitted
     std::string steam_id;                // empty -> omitted
     std::vector<Breadcrumb> breadcrumbs; // empty -> omitted
     bool log{false};                     // always serialized
@@ -202,6 +204,11 @@ struct HeartbeatPayload {
     std::string os;
     std::string arch;
     std::string user_id;   // empty -> omitted
+    /** v0.8 identity upgrade: the device-derived provisional id this session
+     *  beat under before set_user(real_id), carried until a beat delivering
+     *  it is acked (2xx) so the server merges the pre-auth rows. Empty ->
+     *  omitted (the steady state). */
+    std::string prior_user_id;
     /** Pre-serialized `metadata` object (build_user_metadata_json), spliced
      *  verbatim. "{}" is the explicit clear; empty string -> field omitted
      *  (carried only when it differs from the last acked map). */

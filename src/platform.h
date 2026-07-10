@@ -20,6 +20,17 @@ const char *arch_name() noexcept;
  */
 std::filesystem::path default_data_dir();
 
+/**
+ * Best-effort stable per-machine identifier, the source for the device-derived
+ * provisional user id (v0.8). NEVER sent raw — device_identity::derive hashes
+ * it salted with the per-game ingest token. Windows: the
+ * HKLM\SOFTWARE\Microsoft\Cryptography MachineGuid (read from the 64-bit
+ * registry view). Linux: the first line of /etc/machine-id. macOS: the host
+ * UUID via gethostuuid(). Returns "" on any failure or unknown platform — the
+ * caller falls back to a random source.
+ */
+std::string read_machine_id();
+
 }  // namespace tombstone
 
 #endif  // TOMBSTONE_SRC_PLATFORM_H

@@ -178,6 +178,9 @@ std::string build_crash_json(const CrashPayload &payload) {
     optional_field(json, "stackTrace", payload.stack_trace, limits::stack_trace);
     breadcrumbs_field(json, payload.breadcrumbs);
     optional_field(json, "userId", payload.user_id, limits::user_id);
+    // v0.8 identity upgrade: present only while the provisional -> real-id
+    // merge marker is pending (schema order: userId, priorUserId, steamId).
+    optional_field(json, "priorUserId", payload.prior_user_id, limits::user_id);
     optional_field(json, "steamId", payload.steam_id, limits::steam_id);
     json.bool_field("log", payload.log);
     correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
@@ -194,6 +197,7 @@ std::string build_bug_report_json(const BugReportPayload &payload) {
     optional_field(json, "category", payload.category, limits::bug_category);
     clamped_field(json, "message", payload.message, limits::bug_message);
     optional_field(json, "userId", payload.user_id, limits::user_id);
+    optional_field(json, "priorUserId", payload.prior_user_id, limits::user_id);
     optional_field(json, "steamId", payload.steam_id, limits::steam_id);
     breadcrumbs_field(json, payload.breadcrumbs);
     json.bool_field("log", payload.log);
@@ -272,6 +276,10 @@ std::string build_heartbeat_json(const HeartbeatPayload &payload) {
     json.string_field("os", payload.os);
     json.string_field("arch", payload.arch);
     optional_field(json, "userId", payload.user_id, limits::user_id);
+    // v0.8 identity upgrade: the one-shot merge marker (the provisional id this
+    // session beat under before set_user). Carried until a beat delivering it
+    // is acked; the steady state omits it, keeping the body byte-identical.
+    optional_field(json, "priorUserId", payload.prior_user_id, limits::user_id);
     // Per-user custom metadata (tombstone_set_user_metadata): a pre-serialized
     // JSON object spliced verbatim (the client compares the same string for
     // change detection, so wire bytes and baseline can never diverge). Carried

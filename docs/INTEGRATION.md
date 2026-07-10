@@ -23,8 +23,11 @@ events, and Set* calls are never lost.
 ## Identity-first startup (recommended)
 
 By default the first heartbeat leaves the moment `tombstone_init` returns —
-as an *anonymous, "production"* session. If you know who is playing (or which
-environment you are in), hold the first beat until you have said so:
+as a *"production"* session under the device-derived provisional id (v0.8:
+`dev_` + 16 hex, never anonymous; a later `tombstone_set_user(real_id)`
+upgrades the same session via a one-shot `priorUserId`). If you already know
+who is playing (or which environment you are in), hold the first beat until
+you have said so:
 
 ```c
 tombstone_options opt;

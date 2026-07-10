@@ -89,6 +89,14 @@ public:
 private:
     // --- lifecycle helpers (client.cpp) ---
     void configure_storage();
+    /** v0.8: restore-or-derive the persistent device-derived provisional user
+     *  id (the "dev_..." fallback identity). Runs once during init, right
+     *  after configure_storage(). */
+    void acquire_device_identity();
+    /** Read `<data_dir>/identity`; "" unless the content validates. Fail-soft. */
+    std::string read_persisted_identity();
+    /** Best-effort write of `<data_dir>/identity` (a failure is logged only). */
+    void persist_identity(const std::string &id);
     void drain_sidecars();
     void start_session_tracking();
     void report_unclean_shutdown(const SessionMarkerData &previous);
@@ -117,8 +125,13 @@ private:
     /** Force-drain both batches (explicit flush / quit / pre-crash). */
     void flush_all_batches();
 
+    /** The EFFECTIVE user id: the integrator-set id, or the device-derived
+     *  provisional id when none is set (v0.8: never "" after init). */
     std::string current_user_id() const;
     std::string current_steam_id() const;
+    /** The pending one-shot `priorUserId` merge marker ("" = none), stamped on
+     *  crash/bug payloads while pending (heartbeats use the beat-build path). */
+    std::string current_prior_user_id() const;
 
     /** Snapshot of the cached multiplayer correlation context (mutex-guarded).
      *  `environment` is stamped on EVERY payload; role/server_id/match_id on all
@@ -196,6 +209,21 @@ private:
     mutable std::mutex user_mutex_;
     std::string user_id_;
     std::string steam_id_;
+    // v0.8 device identity (Unity 0.16 parity): the persistent device-derived
+    // provisional id ("dev_" + 16 hex), acquired at init (identity file, else
+    // derived from the machine id salted with the ingest token) so the SDK
+    // NEVER sends an anonymous user — current_user_id() falls back to it while
+    // user_id_ is empty. When set_user upgrades provisional -> real id, the
+    // provisional id becomes the one-shot pending_prior_user_id_, sent as
+    // `priorUserId` on heartbeats until one carrying it is acked (crash/bug
+    // bodies stamp it too while pending) so the server merges the session's
+    // pre-auth rows under the real player. prior_in_flight_ records the value
+    // the last-built beat carried; the heartbeat ack commits (clears pending)
+    // only when it still equals the pending value — a dropped beat re-carries.
+    // All three guarded by user_mutex_ (same discipline as user_id_).
+    std::string provisional_user_id_;
+    std::string pending_prior_user_id_;
+    std::string prior_in_flight_;
 
     // Per-user metadata (rides HEARTBEATS with change detection, mirroring the
     // Unity SDK M1/M2): a beat carries the `metadata` object only when the

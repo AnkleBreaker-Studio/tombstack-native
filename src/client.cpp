@@ -1,6 +1,7 @@
 #include "client.h"
 
 #include "clock.h"
+#include "device_identity.h"
 #include "json_scan.h"
 #include "json_writer.h"
 #include "payloads.h"
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <fstream>
 #include <random>
 #include <vector>
 
@@ -29,6 +31,8 @@ constexpr const char *pull_requests_path = "/api/v1/pull-requests";
 constexpr int min_heartbeat_interval_s = 15;
 constexpr int max_heartbeat_interval_s = 600;
 constexpr int default_heartbeat_interval_s = 60;
+
+constexpr const char *identity_file_name = "identity";
 
 constexpr const char *unclean_signature = "unclean-shutdown";
 constexpr const char *unclean_stack_hint =
@@ -132,6 +136,9 @@ tombstone_result Client::init(const tombstone_options &options) {
                     ? fs::path{options.data_dir}
                     : default_data_dir();
     configure_storage();
+    // v0.8: acquire the device-derived provisional user id BEFORE anything can
+    // send (worker/heartbeats start below), so no payload ever ships anonymous.
+    acquire_device_identity();
 
     transport_ = std::make_unique<Transport>(sdk_log_);
     worker_ = std::make_unique<Worker>(*transport_, sidecars_, session_log_, sdk_log_, token_);
@@ -179,6 +186,76 @@ void Client::configure_storage() {
     } catch (const std::exception &e) {
         storage_available_ = false;
         sdk_log_.warn(std::string{"storage setup failed: "} + e.what());
+    }
+}
+
+/**
+ * v0.8 device identity (Unity 0.16 parity): restore the persisted provisional
+ * user id, or derive + persist a fresh one, so the SDK NEVER sends an
+ * anonymous user. The id is "dev_" + 16 lowercase hex of FNV-1a-64 over the
+ * machine id salted with the per-game ingest token — the raw machine id never
+ * goes on the wire, and the same machine yields a different id per game. The
+ * FILE WINS over a re-derive on later launches, so the id stays stable across
+ * an ingest-token rotation. Fail-soft throughout: worst case (no machine id
+ * AND no writable storage) is a random-but-well-formed id per launch.
+ */
+void Client::acquire_device_identity() {
+    std::string id = read_persisted_identity();
+    if (id.empty()) {
+        std::string source = read_machine_id();
+        if (source.empty()) {
+            // No stable machine id on this platform/config: a random source
+            // still yields a well-formed id (persisted below when possible).
+            sdk_log_.warn("machine id unavailable; deriving a random device identity");
+            source = random_session_id();
+        }
+        id = device_identity::derive(token_, source);
+        persist_identity(id);
+    }
+    const std::lock_guard<std::mutex> lock(user_mutex_);
+    provisional_user_id_ = std::move(id);
+}
+
+std::string Client::read_persisted_identity() {
+    if (!storage_available_) {
+        return {};
+    }
+    try {
+        const fs::path path = data_dir_ / identity_file_name;
+        std::error_code ec;
+        if (!fs::exists(path, ec)) {
+            return {};
+        }
+        std::ifstream in{path, std::ios::binary};
+        if (!in) {
+            return {};
+        }
+        std::string id;
+        std::getline(in, id);
+        while (!id.empty() && (id.back() == '\r' || id.back() == '\n' || id.back() == ' ')) {
+            id.pop_back();
+        }
+        // A corrupt/hand-edited file re-derives instead of putting junk on the wire.
+        return device_identity::is_valid(id) ? id : std::string{};
+    } catch (const std::exception &e) {
+        sdk_log_.warn(std::string{"could not read device identity: "} + e.what());
+        return {};
+    }
+}
+
+void Client::persist_identity(const std::string &id) {
+    if (!storage_available_) {
+        return;
+    }
+    try {
+        std::ofstream out{data_dir_ / identity_file_name, std::ios::binary | std::ios::trunc};
+        if (!out) {
+            sdk_log_.warn("could not persist device identity (open failed)");
+            return;
+        }
+        out << id;
+    } catch (const std::exception &e) {
+        sdk_log_.warn(std::string{"could not persist device identity: "} + e.what());
     }
 }
 
@@ -256,8 +333,9 @@ void Client::heartbeat_loop() {
     std::unique_lock<std::mutex> lock(heartbeat_mutex_);
     while (!heartbeat_stop_) {
         // v0.7 send gate: no beat leaves before start_session() — otherwise the
-        // first heartbeat registers an anonymous "production" session before the
-        // game has set identity/environment/metadata.
+        // first heartbeat registers a provisional-identity "production" session
+        // before the game has set identity/environment/metadata (v0.8: the
+        // device-derived dev_ id, never anonymous).
         if (capture_allowed() && start_gate_.is_set()) {
             try {
                 HeartbeatPayload payload;
@@ -266,7 +344,20 @@ void Client::heartbeat_loop() {
                 payload.build_version = build_version_;
                 payload.os = os_;
                 payload.arch = arch_;
-                payload.user_id = current_user_id();
+                // Identity snapshot (one lock so id + prior can never diverge):
+                // the effective user id (provisional fallback — never anonymous,
+                // v0.8) plus the pending one-shot priorUserId merge marker. The
+                // marker rides every beat until one carrying it is acked; the
+                // value recorded in prior_in_flight_ commits on the next 2xx
+                // (mirrors the device/metadata carry — a lost beat re-carries).
+                {
+                    const std::lock_guard<std::mutex> user_lock(user_mutex_);
+                    payload.user_id = user_id_.empty() ? provisional_user_id_ : user_id_;
+                    if (!pending_prior_user_id_.empty()) {
+                        payload.prior_user_id = pending_prior_user_id_;
+                        prior_in_flight_ = pending_prior_user_id_;
+                    }
+                }
                 // role/serverId/matchId let the server register Fleet servers and
                 // honor match/server log-pulls. role is always present: default to
                 // "client" until a match marks this actor a "server".
@@ -360,6 +451,18 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
         // before the body/consent early-returns so an empty ack still confirms delivery.
         if (device_carry_in_flight_.exchange(false, std::memory_order_relaxed)) {
             device_sent_on_heartbeat_.store(true, std::memory_order_relaxed);
+        }
+        {
+            // v0.8: the delivered beat carried prior_in_flight_ as its
+            // priorUserId — stop sending the one-shot marker. Cleared only
+            // when it still equals the pending value, so a late ack cannot
+            // clobber a marker re-stamped by a newer set_user transition
+            // (same commit discipline as the metadata epoch guard below).
+            const std::lock_guard<std::mutex> user_lock(user_mutex_);
+            if (!prior_in_flight_.empty() && prior_in_flight_ == pending_prior_user_id_) {
+                pending_prior_user_id_.clear();
+            }
+            prior_in_flight_.clear();
         }
         {
             // Commit the metadata the delivered beat carried (M1). Voided when

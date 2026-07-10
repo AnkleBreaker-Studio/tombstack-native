@@ -24,7 +24,8 @@ size.
 | `buildVersion` | 1..64 chars |
 | `os` | `windows` \| `macos` \| `linux` \| `other` (compile-time detected) |
 | `arch` | `x64` \| `arm64` \| `x86` \| `other` |
-| `userId` | ≤128 chars, **omitted** when unset |
+| `userId` | ≤128 chars; v0.8: never unset — the device-derived provisional `dev_...` id until `tombstone_set_user` |
+| `priorUserId` | ≤128 chars, heartbeat/crash/bug only; the provisional id carried once during a same-session identity upgrade (until a heartbeat 2xx), **omitted** otherwise |
 | `steamId` | ≤32 chars, **omitted** when unset |
 
 Absent optionals are **omitted entirely** — never sent as `""` (an empty-string

@@ -680,6 +680,111 @@ TEST_CASE("payloads", "heartbeat splices metadata and frame stats after userId")
                          R"("role":"client"})"});
 }
 
+TEST_CASE("payloads", "priorUserId rides heartbeat, crash, and bug bodies while pending") {
+    // v0.8 identity upgrade: the one-shot merge marker sits right after userId
+    // (schema order userId, priorUserId) on all three body kinds.
+    HeartbeatPayload beat;
+    beat.session_id = "a1b2c3d4";
+    beat.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    beat.build_version = "1.0.0";
+    beat.os = "windows";
+    beat.arch = "x64";
+    beat.user_id = "player-7";
+    beat.prior_user_id = "dev_0123456789abcdef";
+    beat.role = "client";
+    CHECK_EQ(build_heartbeat_json(beat),
+             std::string{R"({"sessionId":"a1b2c3d4",)"
+                         R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                         R"("userId":"player-7","priorUserId":"dev_0123456789abcdef",)"
+                         R"("role":"client"})"});
+
+    CrashPayload crash;
+    crash.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    crash.build_version = "1.0.0";
+    crash.os = "windows";
+    crash.arch = "x64";
+    crash.signature = "deadbeef";
+    crash.stack_hint = "hint";
+    crash.log = false;
+    crash.user_id = "player-7";
+    crash.prior_user_id = "dev_0123456789abcdef";
+    crash.steam_id = "7656119";
+    CHECK_EQ(build_crash_json(crash),
+             std::string{R"({"occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                         R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                         R"("signature":"deadbeef","stackHint":"hint",)"
+                         R"("userId":"player-7","priorUserId":"dev_0123456789abcdef",)"
+                         R"("steamId":"7656119","log":false})"});
+
+    BugReportPayload bug;
+    bug.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    bug.build_version = "1.0.0";
+    bug.os = "windows";
+    bug.arch = "x64";
+    bug.message = "stuck";
+    bug.log = false;
+    bug.user_id = "player-7";
+    bug.prior_user_id = "dev_0123456789abcdef";
+    const std::string bug_json = build_bug_report_json(bug);
+    CHECK(bug_json.find(R"("userId":"player-7","priorUserId":"dev_0123456789abcdef")") !=
+          std::string::npos);
+}
+
+TEST_CASE("payloads", "priorUserId is omitted when not pending (the steady state)") {
+    // The steady state (no pending upgrade) must be byte-identical to the
+    // pre-0.8 wire shape — never an empty-string priorUserId.
+    HeartbeatPayload beat;
+    beat.session_id = "a1b2c3d4";
+    beat.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    beat.build_version = "1.0.0";
+    beat.os = "windows";
+    beat.arch = "x64";
+    beat.user_id = "dev_0123456789abcdef";  // provisional-only session: plain userId
+    beat.role = "client";
+    const std::string beat_json = build_heartbeat_json(beat);
+    CHECK_EQ(beat_json, std::string{R"({"sessionId":"a1b2c3d4",)"
+                                    R"("occurredAtIso":"2026-01-02T03:04:05.678Z",)"
+                                    R"("buildVersion":"1.0.0","os":"windows","arch":"x64",)"
+                                    R"("userId":"dev_0123456789abcdef","role":"client"})"});
+    CHECK(beat_json.find("\"priorUserId\"") == std::string::npos);
+
+    CrashPayload crash;
+    crash.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    crash.build_version = "1.0.0";
+    crash.os = "windows";
+    crash.arch = "x64";
+    crash.signature = "deadbeef";
+    crash.stack_hint = "hint";
+    crash.log = false;
+    crash.user_id = "player-7";
+    const std::string crash_json = build_crash_json(crash);
+    CHECK(crash_json.find("\"priorUserId\"") == std::string::npos);
+
+    BugReportPayload bug;
+    bug.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    bug.build_version = "1.0.0";
+    bug.os = "windows";
+    bug.arch = "x64";
+    bug.message = "stuck";
+    bug.log = false;
+    const std::string bug_json = build_bug_report_json(bug);
+    CHECK(bug_json.find("\"priorUserId\"") == std::string::npos);
+}
+
+TEST_CASE("payloads", "priorUserId is clamped to the userId maximum") {
+    HeartbeatPayload beat;
+    beat.session_id = "a1b2c3d4";
+    beat.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    beat.build_version = "1.0.0";
+    beat.os = "windows";
+    beat.arch = "x64";
+    beat.prior_user_id = std::string(200, 'p');  // schema max(128), like userId
+    const std::string json = build_heartbeat_json(beat);
+    CHECK(json.find('"' + std::string(128, 'p') + '"') != std::string::npos);
+    CHECK(json.find(std::string(129, 'p')) == std::string::npos);
+}
+
 TEST_CASE("payloads", "heartbeat carries an explicit metadata clear and omits when unset") {
     // "{}" is the explicit clear (the server deletes the stored record on it)...
     HeartbeatPayload clear_beat;
