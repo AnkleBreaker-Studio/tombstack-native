@@ -3,6 +3,23 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
+## [0.9.1] - 2026-07-20
+
+### Hardening (production audit; no API/ABI change)
+
+- **Native crash handler — bounds-checked ELF NOTE parsing.** `read_build_id` now validates the note
+  name + descriptor against the segment end before reading, and guards forward progress, so a
+  truncated/hostile `PT_NOTE` can't drive an out-of-bounds read at handler install.
+- **Native crash handler — atomic re-entry guard.** The double-fault guard is now
+  `std::atomic_flag::test_and_set` (async-signal-safe AND cross-thread) instead of a
+  read-then-write `volatile sig_atomic_t`, so two threads faulting at once can't both write the dump.
+- **TLS verification asserted.** The libcurl transport now sets `CURLOPT_SSL_VERIFYPEER`/`VERIFYHOST`
+  explicitly instead of inheriting the integrator's defaults.
+- **Breadcrumb memory scrub on consent revoke / GDPR reset.** `BreadcrumbRing::clear()` now clears the
+  slot strings, not just the head/count, so pre-revoke breadcrumb text doesn't linger in process memory.
+- **Version string fixed** — `tombstone_version()` now reports the real version (was stuck at `0.8.0`);
+  header docblock updated to describe the shipped opt-in native handler.
+
 ## [0.9.0] - 2026-07-20
 
 ### Added — in-process native crash handler (EXPERIMENTAL, opt-in; Linux/Android)

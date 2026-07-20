@@ -13,10 +13,12 @@
  * opaque type reserved for a future multi-instance API). Double-init and
  * use-after-shutdown return result codes; they are never undefined behavior.
  *
- * Crash capture scope (v0.x): this SDK REPORTS crashes you hand it
- * (tombstone_report_crash) and detects unclean shutdowns across launches.
- * It does NOT install signal/SEH handlers or write minidumps — that arrives
- * in Phase 2 via a sentry-native/Crashpad fork (see README roadmap).
+ * Crash capture scope: this SDK REPORTS crashes you hand it
+ * (tombstone_report_crash) and detects unclean shutdowns across launches. As of
+ * v0.9 it can ALSO install an in-process async-signal-safe native crash handler
+ * (opt-in via options.enable_native_crash_handler, default off; Linux/Android) —
+ * see that field. Full stack unwinding (Breakpad) + Windows SEH + iOS Mach
+ * remain on the roadmap (see README).
  *
  * Pre-init capture (v0.7): tombstone_add_breadcrumb / tombstone_track_event /
  * tombstone_track_metric / tombstone_set_user / tombstone_set_environment /

@@ -44,6 +44,13 @@ void BreadcrumbRing::clear() {
     const std::lock_guard<std::mutex> lock(mutex_);
     head_ = 0;
     count_ = 0;
+    // Scrub slot memory too: clear() is called on consent revoke / GDPR reset, so pre-revoke
+    // breadcrumb text (potentially PII) must not linger in the process until later overwrites.
+    for (auto &slot : slots_) {
+        slot.ts_iso.clear();
+        slot.level.clear();
+        slot.message.clear();
+    }
 }
 
 }  // namespace tombstone
