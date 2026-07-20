@@ -187,8 +187,8 @@ if(TOMBSTONE_BUILD_TESTS)
 
   foreach(suite
       batch breadcrumb_ring clock concurrency dedupe device_identity frame_stats json_scan
-      json_writer payloads preinit retry_after sampler session_log session_marker sidecar
-      signature start_gate)
+      json_writer native_crash payloads preinit retry_after sampler session_log session_marker
+      sidecar signature start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()
 endif()
