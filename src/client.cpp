@@ -6,10 +6,12 @@
 #include "json_writer.h"
 #include "payloads.h"
 #include "platform.h"
+#include "signature.h"
 #include "transport.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <random>
 #include <vector>
@@ -120,6 +122,7 @@ tombstone_result Client::init(const tombstone_options &options) {
     session_log_enabled_ = options.enable_session_log != 0;
     unclean_detection_enabled_ = options.enable_unclean_shutdown_detection != 0;
     rtt_metric_enabled_ = options.enable_rtt_metric != 0;
+    native_crash_enabled_ = options.enable_native_crash_handler != 0;
     consent_ = options.consent_granted != 0;
     // v0.7 send gate: nonzero (default) latches immediately — today's behavior.
     // 0 defers heartbeats + batch drains until start_session(); a pre-init
@@ -136,6 +139,13 @@ tombstone_result Client::init(const tombstone_options &options) {
                     ? fs::path{options.data_dir}
                     : default_data_dir();
     configure_storage();
+    // v0.9: install the native crash handler once storage is ready (dump fd +
+    // module table). Opt-in + fail-soft: unsupported platforms / setup failure
+    // just leave native_crash_enabled_ behavior to the unclean-shutdown
+    // heuristic. Must run AFTER the previous dump was picked up (above).
+    if (native_crash_enabled_ && storage_available_) {
+        native_crash::install(data_dir_, sdk_log_);
+    }
     // v0.8: acquire the device-derived provisional user id BEFORE anything can
     // send (worker/heartbeats start below), so no payload ever ships anonymous.
     acquire_device_identity();
@@ -182,6 +192,11 @@ void Client::configure_storage() {
             previous_marker_ = marker_.take_previous();
         } else {
             marker_.remove();  // never leave a stale marker behind
+        }
+        // v0.9: pick up a native crash dump from the previous run BEFORE the
+        // handler is (re)installed below — install() truncates the dump file.
+        if (native_crash_enabled_) {
+            previous_native_dump_ = native_crash::take_previous(data_dir_, sdk_log_);
         }
     } catch (const std::exception &e) {
         storage_available_ = false;
@@ -310,6 +325,18 @@ void Client::start_session_tracking() {
  */
 void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
     if (has_restored_crash_) {
+        // A managed crash sidecar survived — richer than anything we can
+        // synthesize; consume any native dump so it can't double-report.
+        previous_native_dump_.reset();
+        return;
+    }
+    // v0.9: a captured native crash dump beats the generic heuristic — it
+    // carries the real signal + symbolicatable frames. Report it INSTEAD of the
+    // "unclean-shutdown" placeholder for the same dead session.
+    if (previous_native_dump_.has_value()) {
+        const NativeCrashDump dump = *previous_native_dump_;
+        previous_native_dump_.reset();
+        report_native_crash(previous, dump);
         return;
     }
     CrashPayload payload;
@@ -325,6 +352,59 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
     payload.device = current_device();  // same physical machine, captured this launch
     // This launch's crumbs belong to this session, not the dead one.
     payload.log = session_log_enabled_ && had_previous_log_;
+    enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
+                   SidecarKind::crash, payload.log, /*log_from_previous=*/true);
+}
+
+/**
+ * v0.9: turn a native crash dump captured last run into a crash report. The
+ * signature is derived from the top native frames (module+offset) so the same
+ * native bug groups together; the human hint names the signal; the frames go
+ * in stackTrace as "module+offset buildId" lines for server-side symbolication
+ * against uploaded symbols. crashType/osSignal ride as fields (never in the
+ * signature). A SIGABRT is classified "signal" (a managed abort/assert path)
+ * vs. the memory-access signals as "native_crash".
+ */
+void Client::report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump) {
+    std::string frames_text;
+    for (const NativeCrashFrame &f : dump.frames) {
+        frames_text += f.module;
+        frames_text += '+';
+        char off[20];
+        std::snprintf(off, sizeof(off), "0x%llx", static_cast<unsigned long long>(f.offset));
+        frames_text += off;
+        if (!f.build_id.empty()) {
+            frames_text += ' ';
+            frames_text += f.build_id;
+        }
+        frames_text += '\n';
+    }
+
+    const std::string sig_name = native_crash::signal_name(dump.signal_no);
+    char fault[24];
+    std::snprintf(fault, sizeof(fault), "0x%llx", static_cast<unsigned long long>(dump.fault_addr));
+
+    CrashPayload payload;
+    payload.occurred_at_iso = now_iso8601_utc_ms();  // detection time (dead session's ts is off-window)
+    payload.build_version = previous.build_version.empty() ? build_version_ : previous.build_version;
+    payload.os = previous.os.empty() ? os_ : previous.os;
+    payload.arch = previous.arch.empty() ? arch_ : previous.arch;
+    // Signature over the native frames (falls back to the signal when frames
+    // were unresolved) — mirrors compute_crash_signature's hint+frames hashing.
+    payload.signature = compute_crash_signature(sig_name, frames_text);
+    payload.stack_hint = "Native crash: " + sig_name + " at " + fault;
+    payload.stack_trace = frames_text;
+    payload.user_id = current_user_id();
+    payload.steam_id = current_steam_id();
+    payload.environment = current_match_context().environment;
+    payload.device = current_device();
+    payload.log = session_log_enabled_ && had_previous_log_;
+    // SIGABRT (POSIX signal 6) is the managed abort/assert/std::terminate path
+    // -> "signal"; the memory-access faults are "native_crash". Literal 6 (not
+    // the SIGABRT macro) so the classification tracks the DEVICE's signal number
+    // regardless of the host the SDK was built on (Windows maps SIGABRT to 22).
+    payload.crash_type = (dump.signal_no == 6) ? "signal" : "native_crash";
+    payload.os_signal = dump.signal_no;
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
                    SidecarKind::crash, payload.log, /*log_from_previous=*/true);
 }

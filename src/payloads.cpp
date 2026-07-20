@@ -186,6 +186,10 @@ std::string build_crash_json(const CrashPayload &payload) {
     correlation_fields(json, payload.role, payload.server_id, payload.match_id, payload.session_id);
     optional_field(json, "environment", payload.environment, limits::environment);
     device_object(json, payload.device);
+    // v0.9 native crash enrichment: coarse cause + POSIX signal number (both
+    // omitted when unset — an ordinary managed crash carries neither).
+    optional_field(json, "crashType", payload.crash_type, limits::signature);
+    optional_int_field(json, "osSignal", payload.os_signal);
     json.end_object();
     return json.str();
 }

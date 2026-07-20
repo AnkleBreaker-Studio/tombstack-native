@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tombstone VERSION 0.8.0 LANGUAGES C CXX)
+project(tombstone VERSION 0.9.0 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
@@ -74,6 +74,7 @@ set(TOMBSTONE_CORE_SOURCES
   src/frame_stats.cpp
   src/json_scan.cpp
   src/json_writer.cpp
+  src/native_crash.cpp
   src/payloads.cpp
   src/platform.cpp
   src/preinit.cpp
@@ -165,6 +166,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_frame_stats.cpp
     tests/test_json_scan.cpp
     tests/test_json_writer.cpp
+    tests/test_native_crash.cpp
     tests/test_payloads.cpp
     tests/test_preinit.cpp
     tests/test_retry_after.cpp

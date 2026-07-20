@@ -7,6 +7,7 @@
 #include "breadcrumb_ring.h"
 #include "dedupe.h"
 #include "frame_stats.h"
+#include "native_crash.h"
 #include "payloads.h"
 #include "sampler.h"
 #include "sdk_log.h"
@@ -100,6 +101,7 @@ private:
     void drain_sidecars();
     void start_session_tracking();
     void report_unclean_shutdown(const SessionMarkerData &previous);
+    void report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump);
     void heartbeat_loop();
     void stop_heartbeat();
     /** Worker-thread hook: parse a heartbeat ack and fulfil pull requests
@@ -205,6 +207,11 @@ private:
     std::optional<SessionMarkerData> previous_marker_;
     bool had_previous_log_{false};
     bool has_restored_crash_{false};
+    // v0.9 native crash handler (experimental, opt-in). `native_crash_enabled_`
+    // mirrors the option; `previous_native_dump_` holds a dump recovered from
+    // the previous run (picked up at init, reported by start_session_tracking).
+    bool native_crash_enabled_{false};
+    std::optional<NativeCrashDump> previous_native_dump_;
 
     mutable std::mutex user_mutex_;
     std::string user_id_;

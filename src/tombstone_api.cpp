@@ -144,6 +144,7 @@ tombstone_result tombstone_options_init(tombstone_options *options) {
     options->consent_granted = 1;
     options->auto_start_session = 1;  // 0 = defer sending until tombstone_start_session()
     options->enable_rtt_metric = 1;
+    options->enable_native_crash_handler = 0;  // EXPERIMENTAL, opt-in (v0.9)
     options->log_callback = nullptr;
     options->log_callback_user_data = nullptr;
     return TOMBSTONE_OK;
