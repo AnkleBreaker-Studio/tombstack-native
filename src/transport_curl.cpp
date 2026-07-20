@@ -104,6 +104,11 @@ HttpResponse perform(CURL *handle, SdkLog &sdk_log) {
     curl_easy_setopt(handle, CURLOPT_HEADERDATA, &retry_after);
     curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L);
+    // Assert TLS verification explicitly rather than inheriting the integrator's libcurl defaults:
+    // this SDK ships a Bearer ingest token to a remote endpoint and must not accept an untrusted or
+    // MITM'd cert even if the host build flipped the defaults. (libcurl defaults to these today.)
+    curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 2L);
 
     const CURLcode code = curl_easy_perform(handle);
     HttpResponse response;

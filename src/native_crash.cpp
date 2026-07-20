@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -128,10 +129,14 @@ struct HandlerState {
     int dump_fd{-1};
     struct sigaction old_actions[kSignalCount];
     bool installed{false};
-    volatile sig_atomic_t in_handler{0};  // re-entrance / double-fault guard
 };
 
 HandlerState g_state;
+
+// Re-entrance / double-fault guard. `atomic_flag::test_and_set` is the ONE lock-free op guaranteed
+// async-signal-safe AND atomic across threads (a plain `volatile sig_atomic_t` read-then-write is
+// not a CAS — two threads faulting at once could both pass and corrupt the single dump fd).
+std::atomic_flag g_in_handler = ATOMIC_FLAG_INIT;
 
 // Fixed alternate signal stack (glibc 2.34+ made SIGSTKSZ a runtime value that
 // can't size an array): 64 KiB is comfortably above SIGSTKSZ on every target.
@@ -155,15 +160,22 @@ void read_build_id(const ElfW(Phdr) & phdr, std::uintptr_t base, ModuleEntry &en
     while (reinterpret_cast<const char *>(note) + sizeof(ElfW(Nhdr)) <= end) {
         const char *name = reinterpret_cast<const char *>(note) + sizeof(ElfW(Nhdr));
         const char *desc = name + ((note->n_namesz + 3) & ~3u);
-        if (note->n_type == NT_GNU_BUILD_ID && note->n_namesz == 4 &&
+        // Bounds: a truncated / hostile NOTE must never drive an out-of-bounds read. `desc` past the
+        // segment end, or the "GNU" name / the descriptor overrunning `end`, aborts the walk.
+        if (desc > end) break;
+        if (note->n_type == NT_GNU_BUILD_ID && note->n_namesz == 4 && name + 4 <= end &&
             std::memcmp(name, "GNU", 3) == 0) {
             std::size_t len = note->n_descsz;
             if (len > kMaxBuildIdBytes) len = kMaxBuildIdBytes;
-            std::memcpy(entry.build_id, desc, len);
-            entry.build_id_len = len;
+            if (desc + len <= end) {
+                std::memcpy(entry.build_id, desc, len);
+                entry.build_id_len = len;
+            }
             return;
         }
-        note = reinterpret_cast<const ElfW(Nhdr) *>(desc + ((note->n_descsz + 3) & ~3u));
+        const char *next = desc + ((note->n_descsz + 3) & ~3u);
+        if (next <= reinterpret_cast<const char *>(note)) break;  // no forward progress → stop
+        note = reinterpret_cast<const ElfW(Nhdr) *>(next);
     }
 }
 
@@ -325,13 +337,13 @@ void chain_old(int sig, siginfo_t *info, void *ucontext) {
 }
 
 extern "C" void tombstone_signal_handler(int sig, siginfo_t *info, void *ucontext) {
-    // Re-entrance / double-fault guard: if a second fatal signal arrives while
-    // we're dumping, don't recurse — hand straight to the old handler.
-    if (g_state.in_handler != 0) {
+    // Re-entrance / double-fault guard (atomic test-and-set): a second fatal signal — including one on
+    // another thread while we're dumping — must not recurse or share the fd; hand straight to the old
+    // handler. Never cleared: a crash is terminal.
+    if (g_in_handler.test_and_set()) {
         chain_old(sig, info, ucontext);
         return;
     }
-    g_state.in_handler = 1;
 
     const int fd = g_state.dump_fd;
     if (fd >= 0) {
