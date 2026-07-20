@@ -3,6 +3,32 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
+## [0.9.0] - 2026-07-20
+
+### Added — in-process native crash handler (EXPERIMENTAL, opt-in; Linux/Android)
+
+- **`options.enable_native_crash_handler`** (default **0**/off). When enabled on a POSIX/ELF
+  target, the SDK installs an **async-signal-safe** handler for `SIGSEGV`, `SIGABRT`, `SIGBUS`,
+  `SIGILL`, `SIGFPE`, `SIGTRAP`. On a fatal signal it writes a minimal dump — the faulting `PC`
+  (and `LR` on ARM) resolved to **`(module, build-id, offset)`** frames — to
+  `<data_dir>/native-crash.dump`, then turns it into a real crash report at the **next launch**
+  (through the existing sidecar/report pipeline). Grouping signature is derived from the native
+  frames; the report carries `crashType` (`native_crash`/`signal`) and `osSignal`.
+- **No on-device symbolication.** Frames are addresses only; symbolication happens server-side
+  against uploaded symbols (the `libil2cpp.so` pipeline). The handler does `write()` + fixed
+  arithmetic only — no `malloc`, no locks, no managed callbacks — with a pre-opened dump fd, a
+  pre-captured module table (`dl_iterate_phdr` + `NT_GNU_BUILD_ID`), a pre-allocated `sigaltstack`
+  (survives stack-overflow SIGSEGV), and a re-entrance/double-fault guard.
+- **Handler chaining.** The previously-installed disposition for each signal is saved and invoked
+  after the dump (both `SA_SIGINFO` and legacy forms), so a co-resident engine handler (Unity /
+  UGS Cloud Diagnostics) still runs; the process is then re-raised to the default action so it
+  dies with the true signal. A CI integration test faults a real child process and asserts all
+  three: dump written, chained handler ran, died with `SIGSEGV`.
+- **Fail-soft + scoped.** `install()` returns false on unsupported platforms (Windows SEH and
+  iOS/Mach are tracked follow-ups) or any setup failure — the SDK keeps the existing
+  unclean-shutdown heuristic. When a native dump exists it supersedes the generic
+  `unclean-shutdown` report for that session; a restored managed crash still wins over both.
+
 ## [0.8.0] - 2026-07-10
 
 ### Added — device identity: the SDK never sends an anonymous user (Unity 0.16 parity)

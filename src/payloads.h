@@ -143,6 +143,8 @@ struct CrashPayload {
     std::string session_id;              // empty -> omitted
     std::string environment;             // empty -> omitted (server defaults to "production")
     DevicePayload device;                // all-unset -> `device` object omitted
+    std::string crash_type;              // v0.9 native handler: "native_crash"/"signal"; empty -> omitted
+    int os_signal{0};                    // v0.9 POSIX signal number when signaled; 0 -> omitted
 };
 
 struct BugReportPayload {

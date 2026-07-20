@@ -123,6 +123,16 @@ typedef struct tombstone_options {
     /** Nonzero (default) = emit a `tombstone.rtt_ms` metric after each successful ingest
      *  POST (the upload round-trip time). 0 disables this self-telemetry. */
     int enable_rtt_metric;
+    /** EXPERIMENTAL (v0.9), default 0 (OFF): install the in-process native crash
+     *  handler. When on, the SDK catches fatal signals (SIGSEGV/ABRT/BUS/ILL/
+     *  FPE/TRAP) with an async-signal-safe handler that writes a minimal dump
+     *  ((module, build-id, offset) frames — NO on-device symbolication) and
+     *  chains to any pre-existing handler (Unity / UGS); the dump is turned
+     *  into a crash report at the NEXT launch. POSIX/ELF only (Linux/Android)
+     *  — a no-op elsewhere. Off keeps the existing unclean-shutdown heuristic.
+     *  Enable only with the game engine's own crash handler installed FIRST so
+     *  chaining is exercised. */
+    int enable_native_crash_handler;
     /** Optional diagnostics sink (see tombstone_log_callback). NULL = silent. */
     tombstone_log_callback log_callback;
     /** Opaque pointer handed back to log_callback. */
