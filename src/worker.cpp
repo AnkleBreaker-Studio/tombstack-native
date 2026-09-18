@@ -199,12 +199,14 @@ std::chrono::steady_clock::time_point Worker::next_wakeup() const {
 
 void Worker::process(UploadJob &job) {
     try {
-        if (job.is_log_put) {
+        if (job.is_log_upload) {
             const HttpResponse response =
-                transport_.put_text(job.url, job.raw, log_put_timeout_seconds);
+                job.form_fields.empty()
+                    ? transport_.put_text(job.url, job.raw, log_upload_timeout_seconds)
+                    : transport_.post_log(job.url, job.form_fields, job.raw, log_upload_timeout_seconds);
             const Outcome outcome = classify(response.transport_error, response.status);
             if (outcome == Outcome::transient && job.attempt + 1 < max_attempts) {
-                // Retries share the backoff but log PUTs are never persisted —
+                // Retries share the backoff but log uploads are never persisted —
                 // the presigned URL is dead by the next launch anyway.
                 retry_or_give_up(job, retry_after_hint(response.status, response.retry_after));
             } else if (outcome == Outcome::poison) {
@@ -243,7 +245,7 @@ void Worker::handle_post_result(UploadJob &job, bool transport_error, long statu
     case Outcome::delivered:
         sidecars_.remove(job.sidecar_path);
         if (job.request_log) {
-            schedule_log_put(job, response_body);
+            schedule_log_upload(job, response_body);
         }
         if (job.parse_ack && ack_handler_) {
             // Heartbeat command channel: hand the 2xx body to the client, which
@@ -266,9 +268,9 @@ void Worker::handle_post_result(UploadJob &job, bool transport_error, long statu
     }
 }
 
-void Worker::schedule_log_put(const UploadJob &job, const std::string &response_body) {
-    const std::optional<std::string> url = find_log_upload_url(response_body);
-    if (!url.has_value() || url->empty()) {
+void Worker::schedule_log_upload(const UploadJob &job, const std::string &response_body) {
+    const auto upload = find_log_upload(response_body);
+    if (!upload) {
         return;  // server granted no slot — fail-soft, the report itself landed
     }
     if (job.log_from_previous && previous_log_claimed_.exchange(true)) {
@@ -280,8 +282,9 @@ void Worker::schedule_log_put(const UploadJob &job, const std::string &response_
         return;
     }
     UploadJob put;
-    put.is_log_put = true;
-    put.url = *url;
+    put.is_log_upload = true;
+    put.url = upload->url;
+    put.form_fields = upload->fields;
     put.raw = std::move(bytes);
     put.durability = Durability::persist_on_failure;  // retried, never persisted
     enqueue(std::move(put));
@@ -301,7 +304,7 @@ void Worker::retry_or_give_up(UploadJob &job, long retry_after_seconds) {
     // launch (write-ahead jobs already have a backing file). Batch envelopes are
     // not single-item sidecars (the uploader posts those to the non-batch
     // endpoint), so they are dropped fail-soft instead of mis-persisted.
-    if (!job.is_log_put && !job.no_persist && job.sidecar_path.empty() &&
+    if (!job.is_log_upload && !job.no_persist && job.sidecar_path.empty() &&
         job.durability != Durability::ephemeral) {
         sidecars_.write(job.kind, job.body);
     }
@@ -314,7 +317,7 @@ void Worker::persist_leftovers() {
         leftovers.swap(queue_);
     }
     for (const UploadJob &job : leftovers) {
-        if (!job.is_log_put && !job.no_persist && job.sidecar_path.empty() &&
+        if (!job.is_log_upload && !job.no_persist && job.sidecar_path.empty() &&
             job.durability != Durability::ephemeral) {
             sidecars_.write(job.kind, job.body);
         }

@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace tombstone {
 
@@ -38,7 +39,7 @@ public:
 
     /**
      * POST a JSON body with `Authorization: Bearer <token>`. When `sign` is set
-     * (ingest endpoints only — never pull/editor), an `X-Tombstone-Signature`
+     * (ingest endpoints only — never pull/editor), an `X-Tombstack-Signature`
      * header is computed at send time over the raw body keyed by `token` (S3).
      * Signing is fail-soft: any signing error sends the request unsigned (the
      * server accepts unsigned ingest during the rollout).
@@ -53,6 +54,11 @@ public:
      */
     HttpResponse put_text(const std::string &url, const std::vector<char> &bytes,
                           long timeout_seconds);
+
+    /** Append signed policy fields before the file; never send the ingest token to storage. */
+    HttpResponse post_log(const std::string &url,
+                          const std::vector<std::pair<std::string, std::string>> &fields,
+                          const std::vector<char> &bytes, long timeout_seconds);
 
 private:
     SdkLog &sdk_log_;

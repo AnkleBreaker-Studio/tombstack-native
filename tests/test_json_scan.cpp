@@ -4,6 +4,7 @@
 using tombstone::find_bool_field;
 using tombstone::find_int_field;
 using tombstone::find_log_upload_url;
+using tombstone::find_log_upload;
 using tombstone::find_pending_requests;
 using tombstone::find_string_field;
 
@@ -64,6 +65,31 @@ TEST_CASE("json_scan", "stays inside the logUpload object") {
     // "url" appears AFTER logUpload closes -> must not be picked up.
     const char *json = R"({"data":{"logUpload":{"key":"k"},"url":"https://outside"}})";
     CHECK(!find_log_upload_url(json).has_value());
+}
+
+TEST_CASE("json_scan", "reads signed POST fields in their original order") {
+    const auto upload = find_log_upload(
+        R"({"data":{"logUpload":{"method":"POST","url":"https://s3.example/",)"
+        R"("fields":{"key":"logs/a.log","Policy":"a+/=","X-Amz-Credential":"x\/y\u002fz"}}}})");
+    CHECK(upload.has_value());
+    CHECK_EQ(upload->method, std::string{"POST"});
+    CHECK_EQ(upload->fields.size(), std::size_t{3});
+    CHECK_EQ(upload->fields[0].first, std::string{"key"});
+    CHECK_EQ(upload->fields[2].second, std::string{"x/y/z"});
+    CHECK_EQ(find_log_upload(ingest_response)->method, std::string{"PUT"});
+}
+
+TEST_CASE("json_scan", "refuses invalid POST descriptors without falling back to PUT") {
+    for (const char *fields : {"{}", "null", R"({"key":1})", R"({"key":"a",})",
+             R"({"key":"a","key":"b"})", R"({"file":"a"})", R"({"bad\r\nheader":"a"})",
+             R"({"key":"unterminated})"}) {
+        CHECK(!find_log_upload(std::string{R"({"logUpload":{"method":"POST","url":"https://s3.example","fields":)"}
+              + fields + "}}").has_value());
+    }
+    CHECK(!find_log_upload(R"({"logUpload":{"method":"POST","url":"https://s3.example"}})").has_value());
+    CHECK(!find_log_upload(R"({"logUpload":{"method":"DELETE","url":"https://s3.example"}})").has_value());
+    CHECK(!find_log_upload(R"({"logUpload":{},"url":"https://outside","method":"PUT"})").has_value());
+    CHECK(!find_log_upload(R"({"logUpload":{"method":"PUT","url":"https://s3.example")").has_value());
 }
 
 TEST_CASE("json_scan", "parses the heartbeat-ack pending requests") {

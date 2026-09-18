@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <utility>
 
 namespace tombstone {
 
@@ -30,12 +31,13 @@ enum class Durability {
     write_ahead,
 };
 
-/** One outbound item: a JSON ingest POST, or a raw session-log PUT. */
+/** One outbound item: a JSON ingest POST, or a session-log upload. */
 struct UploadJob {
-    bool is_log_put{false};
-    std::string url;          // absolute URL (ingest endpoint or presigned PUT)
+    bool is_log_upload{false};
+    std::vector<std::pair<std::string, std::string>> form_fields;
+    std::string url;          // absolute URL (ingest endpoint or presigned upload)
     std::string body;         // JSON body (POST jobs)
-    std::vector<char> raw;    // log bytes (PUT jobs)
+    std::vector<char> raw;    // log bytes (upload jobs)
     Durability durability{Durability::persist_on_failure};
     SidecarKind kind{SidecarKind::event};
     std::filesystem::path sidecar_path;  // non-empty when backed by a pending file
@@ -43,7 +45,7 @@ struct UploadJob {
     bool log_from_previous{false};       // a granted presign uploads previous-session.log
     bool no_persist{false};              // batch envelopes: retry in-session, never sidecar'd
     bool parse_ack{false};               // heartbeat: hand the 2xx body to the ack handler
-    bool sign_body{false};               // ingest POST: attach the X-Tombstone-Signature header (S3)
+    bool sign_body{false};               // ingest POST: attach the X-Tombstack-Signature header (S3)
     bool suppress_rtt{false};            // metrics:batch: do NOT emit an rtt metric (would recurse)
     int attempt{0};
     std::chrono::steady_clock::time_point not_before{};
@@ -54,7 +56,7 @@ struct UploadJob {
  * with in-session exponential backoff (2s -> 32s, 5 attempts; a 429/503
  * Retry-After raises the wait, capped at 300s — see retry_after.h), classifies
  * results (2xx delivered / poison 4xx dropped / 429 + 5xx + network retried),
- * persists durable leftovers as sidecars, chases presigned session-log PUTs,
+ * persists durable leftovers as sidecars, chases presigned session-log uploads,
  * and paces the rolling session-log flush. Owns no payload semantics — the
  * client builds bodies; the worker delivers them.
  */
@@ -64,7 +66,7 @@ public:
     static constexpr int max_attempts = 5;
     static constexpr std::chrono::seconds retry_base_delay{2};
     static constexpr long request_timeout_seconds = 15;
-    static constexpr long log_put_timeout_seconds = 30;
+    static constexpr long log_upload_timeout_seconds = 30;
     static constexpr std::chrono::seconds log_flush_interval{5};
     /** Idle wake cadence while batching is active so the age trigger is seen
      *  within ~1s (timed wait, never a busy loop -- spec section 15). */
@@ -121,7 +123,7 @@ private:
     void process(UploadJob &job);
     void handle_post_result(UploadJob &job, bool transport_error, long status,
                             const std::string &response_body, const std::string &retry_after);
-    void schedule_log_put(const UploadJob &job, const std::string &response_body);
+    void schedule_log_upload(const UploadJob &job, const std::string &response_body);
     /** Re-queue with backoff — raised to a server Retry-After (seconds form, on
      *  429/503; capped at 300 s — see retry_after.h) when larger — or persist /
      *  drop at max_attempts. `retry_after_seconds` < 0 means "no header". */

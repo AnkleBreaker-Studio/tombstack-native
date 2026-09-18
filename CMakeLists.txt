@@ -194,6 +194,17 @@ if(TOMBSTONE_BUILD_TESTS)
       sidecar signature start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()
+
+  find_program(TOMBSTONE_NODE_EXECUTABLE node)
+  if(TOMBSTONE_NODE_EXECUTABLE)
+    add_executable(tombstone_wire_probe tests/wire_probe.cpp src/worker.cpp src/transport_curl.cpp
+      $<TARGET_OBJECTS:tombstone_core>)
+    target_include_directories(tombstone_wire_probe PRIVATE src include)
+    target_link_libraries(tombstone_wire_probe PRIVATE CURL::libcurl Threads::Threads tombstone_warnings)
+    add_test(NAME transport_wire COMMAND ${TOMBSTONE_NODE_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/wire-test.mjs $<TARGET_FILE:tombstone_wire_probe>)
+    set_tests_properties(transport_wire PROPERTIES TIMEOUT 60)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------

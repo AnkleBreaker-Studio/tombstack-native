@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <utility>
 
 namespace tombstone {
 
@@ -36,6 +37,15 @@ std::optional<long long> find_int_field(std::string_view json, std::string_view 
  * granted no slot (the `logUpload` field is optional in the envelope).
  */
 std::optional<std::string> find_log_upload_url(std::string_view response_body);
+
+struct LogUpload {
+    std::string url;
+    std::string method;
+    std::vector<std::pair<std::string, std::string>> fields;
+};
+
+/** Reject incomplete POST descriptors instead of silently attempting an unsigned PUT. */
+std::optional<LogUpload> find_log_upload(std::string_view response_body);
 
 /** One pending log-pull request as read from the heartbeat ack command channel. */
 struct PendingPullRequest {

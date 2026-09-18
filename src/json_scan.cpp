@@ -1,5 +1,7 @@
 #include "json_scan.h"
 
+#include <algorithm>
+
 namespace tombstone {
 
 namespace {
@@ -56,7 +58,8 @@ int hex_value(char c) noexcept {
 }
 
 /** Read and unescape the JSON string starting at the opening quote. */
-std::optional<std::string> read_string(std::string_view json, std::size_t at) {
+std::optional<std::string> read_string(std::string_view json, std::size_t at,
+                                     std::size_t *after = nullptr) {
     if (at >= json.size() || json[at] != '"') {
         return std::nullopt;
     }
@@ -65,8 +68,10 @@ std::optional<std::string> read_string(std::string_view json, std::size_t at) {
     while (cursor < json.size()) {
         const char c = json[cursor];
         if (c == '"') {
+            if (after) *after = cursor + 1;
             return out;
         }
+        if (static_cast<unsigned char>(c) < 0x20) return std::nullopt;
         if (c != '\\') {
             out += c;
             ++cursor;
@@ -181,13 +186,13 @@ std::optional<long long> find_int_field(std::string_view json, std::string_view 
     return negative ? -value : value;
 }
 
-std::optional<std::string> find_log_upload_url(std::string_view response_body) {
-    const std::size_t at = find_value_start(response_body, "logUpload");
+static std::optional<std::string_view> find_object_field(std::string_view response_body,
+                                                       std::string_view key) {
+    const std::size_t at = find_value_start(response_body, key);
     if (at == std::string_view::npos || at >= response_body.size() ||
         response_body[at] != '{') {
         return std::nullopt;
     }
-    // Scan only inside the logUpload object (up to its matching closing brace).
     std::size_t depth = 0;
     std::size_t end = at;
     bool in_string = false;
@@ -213,7 +218,52 @@ std::optional<std::string> find_log_upload_url(std::string_view response_body) {
             }
         }
     }
-    return find_string_field(response_body.substr(at, end - at), "url");
+    if (depth != 0 || in_string) return std::nullopt;
+    return response_body.substr(at, end - at);
+}
+
+std::optional<std::string> find_log_upload_url(std::string_view response_body) {
+    const auto object = find_object_field(response_body, "logUpload");
+    return object ? find_string_field(*object, "url") : std::nullopt;
+}
+
+std::optional<LogUpload> find_log_upload(std::string_view response_body) {
+    if (response_body.size() > 128 * 1024) return std::nullopt;
+    const auto object = find_object_field(response_body, "logUpload");
+    if (!object) return std::nullopt;
+    LogUpload upload;
+    upload.url = find_string_field(*object, "url").value_or("");
+    upload.method = find_string_field(*object, "method").value_or("");
+    if (upload.url.empty()) return std::nullopt;
+    if (upload.method == "PUT") return upload;
+    if (upload.method != "POST") return std::nullopt;
+    const auto fields = find_object_field(*object, "fields");
+    if (!fields) return std::nullopt;
+    std::size_t cursor = 1;
+    const auto skip_space = [&] {
+        while (cursor < fields->size() &&
+               ((*fields)[cursor] == ' ' || (*fields)[cursor] == '\r' ||
+                (*fields)[cursor] == '\n' || (*fields)[cursor] == '\t')) ++cursor;
+    };
+    for (;;) {
+        skip_space();
+        const auto name = read_string(*fields, cursor, &cursor);
+        if (!name || name->empty() || name->size() > 128 || *name == "file" ||
+            name->find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+                != std::string::npos) return std::nullopt;
+        skip_space();
+        if (cursor >= fields->size() || (*fields)[cursor++] != ':') return std::nullopt;
+        skip_space();
+        auto value = read_string(*fields, cursor, &cursor);
+        if (!value || value->size() > 16384 || upload.fields.size() >= 32) return std::nullopt;
+        if (std::any_of(upload.fields.begin(), upload.fields.end(),
+                        [&](const auto &entry) { return entry.first == *name; })) return std::nullopt;
+        upload.fields.emplace_back(*name, std::move(*value));
+        skip_space();
+        if (cursor >= fields->size()) return std::nullopt;
+        if ((*fields)[cursor] == '}') return upload;
+        if ((*fields)[cursor++] != ',') return std::nullopt;
+    }
 }
 
 std::vector<PendingPullRequest> find_pending_requests(std::string_view response_body) {
