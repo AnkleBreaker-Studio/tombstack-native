@@ -1,8 +1,8 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.18)
 # NOTE: this version is DUPLICATED as a literal in src/tombstone_api.cpp (`sdk_version`), which is what
 # tombstone_version() returns. Bump both together — 0.9.1's changelog records that the reported version
 # was once stuck at 0.8.0 for exactly this reason. Deriving it from PROJECT_VERSION is the real fix.
-project(tombstone VERSION 0.9.2 LANGUAGES C CXX)
+project(tombstone VERSION 0.9.3 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
@@ -31,10 +31,13 @@ endif()
 # ---------------------------------------------------------------------------
 # libcurl: system package first, FetchContent fallback (HTTP+TLS only).
 # ---------------------------------------------------------------------------
-find_package(CURL QUIET)
+find_package(CURL 7.56 QUIET)
 if(NOT CURL_FOUND)
-  message(STATUS "tombstone: system libcurl not found; fetching curl 8.11.1")
+  message(STATUS "tombstone: system libcurl not found; fetching curl 8.22.0")
   include(FetchContent)
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
   set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
@@ -51,15 +54,13 @@ if(NOT CURL_FOUND)
   set(CURL_DISABLE_LDAP ON CACHE BOOL "" FORCE)
   if(WIN32)
     set(CURL_USE_SCHANNEL ON CACHE BOOL "" FORCE)
-  elseif(APPLE)
-    set(CURL_USE_SECTRANSP ON CACHE BOOL "" FORCE)
   else()
     set(CURL_USE_OPENSSL ON CACHE BOOL "" FORCE)
   endif()
   FetchContent_Declare(
     curl
-    URL https://github.com/curl/curl/releases/download/curl-8_11_1/curl-8.11.1.tar.gz
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    URL https://curl.se/download/curl-8.22.0.tar.gz
+    URL_HASH SHA256=d54dd598bf05927a726deb38df31c6a255ba83ff1de57c5d1464dac3ed8f44a1
   )
   FetchContent_MakeAvailable(curl)
 endif()
@@ -194,6 +195,17 @@ if(TOMBSTONE_BUILD_TESTS)
       sidecar signature start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()
+
+  find_program(TOMBSTONE_NODE_EXECUTABLE node)
+  if(TOMBSTONE_NODE_EXECUTABLE)
+    add_executable(tombstone_wire_probe tests/wire_probe.cpp src/worker.cpp src/transport_curl.cpp
+      $<TARGET_OBJECTS:tombstone_core>)
+    target_include_directories(tombstone_wire_probe PRIVATE src include)
+    target_link_libraries(tombstone_wire_probe PRIVATE CURL::libcurl Threads::Threads tombstone_warnings)
+    add_test(NAME transport_wire COMMAND ${TOMBSTONE_NODE_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/wire-test.mjs $<TARGET_FILE:tombstone_wire_probe>)
+    set_tests_properties(transport_wire PROPERTIES TIMEOUT 60)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------

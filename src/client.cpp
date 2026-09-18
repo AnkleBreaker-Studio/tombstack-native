@@ -802,21 +802,23 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
     if (!batch.has_items()) {
         return;  // cheap short-circuit: an empty idle loop allocates nothing (section 15)
     }
-    std::optional<std::string> envelope = batch.drain_if_ready(now_iso8601_utc_ms(), now, force);
-    if (!envelope.has_value()) {
+    auto envelopes = batch.drain_envelopes_if_ready(now_iso8601_utc_ms(), now, force);
+    if (envelopes.empty()) {
         return;
     }
-    UploadJob job;
-    job.url = endpoint_ + path;
-    job.body = std::move(*envelope);
-    job.durability = Durability::persist_on_failure;  // retried with backoff in-session
-    job.no_persist = true;  // a batch envelope is not a single-item sidecar
-    job.sign_body = true;  // events:batch / metrics:batch are ingest POSTs — sign them (S3)
-    job.suppress_rtt = suppress_rtt;  // the metrics batch's own upload must not emit an rtt metric
-    // Record the flush time for diagnostics (K3); steady-clock ns, 0 means "never".
-    last_flush_steady_ns_.store(
-        std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
-    worker_->enqueue(std::move(job));
+    for (auto &envelope : envelopes) {
+        UploadJob job;
+        job.url = endpoint_ + path;
+        job.body = std::move(envelope);
+        job.durability = Durability::persist_on_failure;  // retried with backoff in-session
+        job.no_persist = true;  // a batch envelope is not a single-item sidecar
+        job.sign_body = true;  // events:batch / metrics:batch are ingest POSTs — sign them (S3)
+        job.suppress_rtt = suppress_rtt;  // the metrics batch's own upload must not emit an rtt metric
+        // Record the flush time for diagnostics (K3); steady-clock ns, 0 means "never".
+        last_flush_steady_ns_.store(
+            std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+        worker_->enqueue(std::move(job));
+    }
 }
 
 void Client::drain_ready_batches() {

@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <utility>
 
 namespace tombstone {
 
@@ -31,11 +32,20 @@ std::optional<bool> find_bool_field(std::string_view json, std::string_view key)
 std::optional<long long> find_int_field(std::string_view json, std::string_view key);
 
 /**
- * Presigned session-log PUT URL from a crash/bug ingest response:
+ * Presigned session-log URL from a crash/bug ingest response:
  * locates the `"logUpload"` object, then its `"url"`. nullopt when the server
  * granted no slot (the `logUpload` field is optional in the envelope).
  */
 std::optional<std::string> find_log_upload_url(std::string_view response_body);
+
+struct LogUpload {
+    std::string url;
+    std::string method;
+    std::vector<std::pair<std::string, std::string>> fields;
+};
+
+/** Reject incomplete POST descriptors instead of silently attempting an unsigned PUT. */
+std::optional<LogUpload> find_log_upload(std::string_view response_body);
 
 /** One pending log-pull request as read from the heartbeat ack command channel. */
 struct PendingPullRequest {

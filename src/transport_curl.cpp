@@ -151,7 +151,7 @@ HttpResponse Transport::post_json(const std::string &url, const std::string &tok
             try {
                 const auto unix_seconds = static_cast<std::int64_t>(std::time(nullptr));
                 signature_header =
-                    "X-Tombstone-Signature: " +
+                    "X-Tombstack-Signature: " +
                     build_ingest_signature_header(token, body, unix_seconds);
                 headers = append_header(std::move(headers), signature_header.c_str());
             } catch (...) {
@@ -190,6 +190,36 @@ HttpResponse Transport::put_text(const std::string &url, const std::vector<char>
         curl_easy_setopt(handle.get(), CURLOPT_POSTFIELDSIZE,
                          static_cast<long>(bytes.size()));
         curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, headers.get());
+        curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT, timeout_seconds);
+        return perform(handle.get(), sdk_log_);
+    } catch (...) {
+        return HttpResponse{};
+    }
+}
+
+HttpResponse Transport::post_log(const std::string &url,
+                                 const std::vector<std::pair<std::string, std::string>> &fields,
+                                 const std::vector<char> &bytes, long timeout_seconds) {
+    try {
+        const CurlHandle handle{curl_easy_init()};
+        if (!handle || fields.empty()) return HttpResponse{};
+        const std::unique_ptr<curl_mime, decltype(&curl_mime_free)> form{
+            curl_mime_init(handle.get()), curl_mime_free};
+        if (!form) return HttpResponse{};
+        for (const auto &field : fields) {
+            auto *part = curl_mime_addpart(form.get());
+            if (!part || curl_mime_name(part, field.first.c_str()) != CURLE_OK ||
+                curl_mime_data(part, field.second.data(), field.second.size()) != CURLE_OK)
+                return HttpResponse{};
+        }
+        // S3 requires the file last; use an explicit size to preserve embedded NUL bytes.
+        auto *file = curl_mime_addpart(form.get());
+        if (!file || curl_mime_name(file, "file") != CURLE_OK ||
+            curl_mime_filename(file, "session.log") != CURLE_OK ||
+            curl_mime_type(file, "text/plain") != CURLE_OK ||
+            curl_mime_data(file, bytes.data(), bytes.size()) != CURLE_OK) return HttpResponse{};
+        curl_easy_setopt(handle.get(), CURLOPT_URL, url.c_str());
+        curl_easy_setopt(handle.get(), CURLOPT_MIMEPOST, form.get());
         curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT, timeout_seconds);
         return perform(handle.get(), sdk_log_);
     } catch (...) {
