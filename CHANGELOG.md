@@ -3,6 +3,10 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
+## [0.9.4] - 2026-09-18
+
+- Fix a copied range-loop variable in the new batch tests. GCC/Clang treat it as an error under the SDK's warnings-as-errors policy, so the default Linux/macOS build of 0.9.3 failed even though Windows compiled. Runtime transport behaviour is unchanged from 0.9.3.
+
 ## [0.9.3] - 2026-09-18
 
 - Split event and metric envelopes at 512 KiB using encoded byte sizes. Snapshot drains preserve item order and flush all ready envelopes; an individually invalid oversized item is isolated.

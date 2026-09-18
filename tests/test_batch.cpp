@@ -67,7 +67,7 @@ TEST_CASE("batch", "bounded capacity drops the oldest item") {
 }
 
 TEST_CASE("batch", "splits large UTF-8 and escaped items without loss or reordering") {
-    for (const std::string value : {std::string{"x"}, std::string{"\xe6\xbc\xa2"},
+    for (const std::string &value : {std::string{"x"}, std::string{"\xe6\xbc\xa2"},
                                      std::string{"\\u0001"}}) {
         for (const std::size_t count : {Batch::flush_count, Batch::max_items}) {
             for (const bool snapshot : {false, true}) {

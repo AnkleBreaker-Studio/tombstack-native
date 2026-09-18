@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.18)
 # NOTE: this version is DUPLICATED as a literal in src/tombstone_api.cpp (`sdk_version`), which is what
 # tombstone_version() returns. Bump both together — 0.9.1's changelog records that the reported version
 # was once stuck at 0.8.0 for exactly this reason. Deriving it from PROJECT_VERSION is the real fix.
-project(tombstone VERSION 0.9.3 LANGUAGES C CXX)
+project(tombstone VERSION 0.9.4 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
