@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.18)
 # NOTE: this version is DUPLICATED as a literal in src/tombstone_api.cpp (`sdk_version`), which is what
 # tombstone_version() returns. Bump both together — 0.9.1's changelog records that the reported version
 # was once stuck at 0.8.0 for exactly this reason. Deriving it from PROJECT_VERSION is the real fix.
-project(tombstone VERSION 0.9.2 LANGUAGES C CXX)
+project(tombstone VERSION 0.9.3 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
@@ -31,10 +31,13 @@ endif()
 # ---------------------------------------------------------------------------
 # libcurl: system package first, FetchContent fallback (HTTP+TLS only).
 # ---------------------------------------------------------------------------
-find_package(CURL QUIET)
+find_package(CURL 7.56 QUIET)
 if(NOT CURL_FOUND)
   message(STATUS "tombstone: system libcurl not found; fetching curl 8.22.0")
   include(FetchContent)
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
   set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
@@ -58,7 +61,6 @@ if(NOT CURL_FOUND)
     curl
     URL https://curl.se/download/curl-8.22.0.tar.gz
     URL_HASH SHA256=d54dd598bf05927a726deb38df31c6a255ba83ff1de57c5d1464dac3ed8f44a1
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(curl)
 endif()

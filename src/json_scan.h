@@ -32,7 +32,7 @@ std::optional<bool> find_bool_field(std::string_view json, std::string_view key)
 std::optional<long long> find_int_field(std::string_view json, std::string_view key);
 
 /**
- * Presigned session-log PUT URL from a crash/bug ingest response:
+ * Presigned session-log URL from a crash/bug ingest response:
  * locates the `"logUpload"` object, then its `"url"`. nullopt when the server
  * granted no slot (the `logUpload` field is optional in the envelope).
  */

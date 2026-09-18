@@ -125,13 +125,10 @@ Node.js 22+ enables the additional local HTTP wire-contract test. Options: `TOMB
 
 ## Scope & roadmap
 
-**v0.x reports crashes you hand it** (plus everything above). It deliberately
-does **not** install signal/SEH handlers or write minidumps — async-signal-safe
-minidump capture is not something to hand-roll. **Phase 2** adds OS-level
-crash capture by forking/configuring **sentry-native (Crashpad backend)** per
-the monorepo's locked plan (`docs/NATIVE-CAPTURE.md` there): the handler
-writes a minidump + sidecar at crash time, and this SDK's existing sidecar
-queue uploads on the next launch through the already-live presigned-S3 flow.
+The SDK reports crashes supplied by the game and detects unclean shutdowns.
+Linux/Android also have an experimental in-process native handler, disabled by default
+(`options.enable_native_crash_handler`). It captures the top frame; full stack unwinding,
+Windows SEH and iOS Mach capture remain on the roadmap.
 
 ## License
 

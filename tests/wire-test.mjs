@@ -69,6 +69,7 @@ try {
       const env = { ...process.env };
       delete env.TOMBSTACK_WIRE_TOKEN;
       delete env.TOMBSTACK_WIRE_BODY;
+      delete env.TOMBSTACK_WIRE_RESPONSE;
       const child = spawn(process.argv[2], [`${base}/${route}`, join(scratch, route)], { env, stdio: "inherit" });
       child.on("error", reject);
       child.on("exit", code => code === 0 ? resolve() : reject(new Error(`probe exited ${code}`)));

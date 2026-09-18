@@ -10,6 +10,9 @@ size.
 
 - Every ingest POST carries `Authorization: Bearer tmb_...` (per-game SDK
   token) and `Content-Type: application/json`.
+- Since 0.9.3, signed ingest sends `X-Tombstack-Signature: t=<unixSec>,v1=<hex>`,
+  with HMAC-SHA256(token, `<t>.<rawBody>`). Earlier native releases used the obsolete
+  `X-Tombstone-Signature` name, which the current server did not verify.
 - Responses use `{ "success": true, "data": ... }` /
   `{ "success": false, "error": ... }`.
 - Status classification (matches `tools/lib/upload-classify.mjs`):
@@ -118,19 +121,27 @@ When a crash/bug body carries `"log": true`, the `201` response may include:
 
 ```json
 { "success": true, "data": { "crashId": "01H...",
-  "logUpload": { "url": "https://s3...presigned", "key": "logs/<gameId>/<id>.log",
-                  "method": "PUT", "headers": { "Content-Type": "text/plain" } } } }
+  "logUpload": { "url": "https://bucket.s3.region.amazonaws.com/", "key": "logs/<gameId>/<id>.log",
+    "method": "POST", "fields": { "key": "logs/<gameId>/<id>.log", "Content-Type": "text/plain",
+      "Policy": "...", "X-Amz-Algorithm": "AWS4-HMAC-SHA256", "X-Amz-Credential": "...",
+      "X-Amz-Date": "...", "X-Amz-Signature": "..." } } } }
 ```
 
-The SDK then PUTs the session-log bytes to `url` with
-`Content-Type: text/plain` and **no Authorization header** (the presigned URL
-is self-authorizing; the game token must never reach the storage host). The
-presign has a 15-minute TTL, so log PUTs are retried in-session but never
+The SDK sends multipart POST to `url`, appending every signed `fields` entry in order,
+then the `file` part containing the log bytes with media type `text/plain`.
+It sends **no Authorization header**: the game token must never reach the storage host.
+Explicit legacy `method: "PUT"` descriptors still use raw text PUT. A missing or malformed
+POST policy is rejected rather than downgraded to PUT. Signed upload slots expire, so uploads are retried in-session but never
 persisted across launches. For unclean-shutdown reports (and sidecars restored
 from a previous run) the **preserved `previous-session.log`** is uploaded
 instead, at most once per launch.
 
 ## Offline sidecars
+
+Events and metrics use batch endpoints. Each valid envelope stays within 512 KiB of encoded
+JSON, including its timestamp and separators. Byte splitting preserves item order and does
+not change the 50-item / 10-second flush triggers. Invalid individually oversized items are
+isolated so their rejection cannot discard valid neighbours.
 
 `<data_dir>/pending/{crashes,bug-reports,events}/<ms-epoch>-<8hex>.json` —
 file content is the raw ingest body above, no wrapper. Drained on the next

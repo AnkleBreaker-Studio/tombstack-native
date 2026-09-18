@@ -3,6 +3,16 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
+## [0.9.3] - 2026-09-18
+
+- Split event and metric envelopes at 512 KiB using encoded byte sizes. Snapshot drains preserve item order and flush all ready envelopes; an individually invalid oversized item is isolated.
+- Upload session logs using the server's signed multipart POST fields, with the file last and no ingest Authorization header. Preserve policy fields across retries; retain compatibility with explicit legacy PUT descriptors.
+- Correct the ingest signature header to X-Tombstack-Signature so the server verifies the HMAC.
+- Update the source fallback to curl 8.22.0 with a SHA-256 pin. Requires CMake 3.18+; the fallback uses Schannel on Windows and OpenSSL development libraries on Linux/macOS. System libcurl remains supported.
+- Add real HTTP transport tests and an opt-in live storage round-trip check. The C ABI and library names are unchanged.
+
+Validation: Windows x64 MSVC shared/static libraries, examples and all 20 CTest suites; real production signed ingestion, S3 log upload and byte-identical authenticated read-back using a test tenant. Linux/macOS execution was not available locally.
+
 ## [0.9.2] - 2026-08-25
 
 ### Fixed — heartbeat ceiling lowered to 240s (behaviour change; no API/ABI change)
