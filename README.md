@@ -117,9 +117,10 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Requires a C++17 compiler. libcurl is found via `find_package(CURL)` with a
-pinned FetchContent fallback (Schannel on Windows, SecureTransport on macOS,
-OpenSSL on Linux). Options: `TOMBSTONE_BUILD_STATIC`,
+Requires CMake 3.18+ and a C++17 compiler. libcurl is found via `find_package(CURL)` with a
+SHA-256-pinned curl 8.22.0 FetchContent fallback (Schannel on Windows, OpenSSL on Linux/macOS).
+Install the OpenSSL development package when using the fallback outside Windows.
+Node.js 22+ enables the additional local HTTP wire-contract test. Options: `TOMBSTONE_BUILD_STATIC`,
 `TOMBSTONE_BUILD_EXAMPLES`, `TOMBSTONE_BUILD_TESTS`.
 
 ## Scope & roadmap

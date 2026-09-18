@@ -24,6 +24,10 @@ int main(int argc, char **argv) {
     const char *token = std::getenv("TOMBSTACK_WIRE_TOKEN");
     tombstone::Worker worker(transport, sidecars, session, log,
                              token ? token : "audit-public-token");
+    const char *response_path = std::getenv("TOMBSTACK_WIRE_RESPONSE");
+    if (response_path) worker.set_ack_handler([response_path](const std::string &body) {
+        std::ofstream(response_path, std::ios::binary) << body;
+    });
     tombstone::UploadJob job;
     job.url = argv[1];
     job.body = R"({"log":true,"fixture":"native wire audit"})";
@@ -34,6 +38,7 @@ int main(int argc, char **argv) {
     }
     job.sign_body = true;
     job.request_log = true;
+    job.parse_ack = response_path != nullptr;
     job.no_persist = true;
     worker.enqueue(std::move(job));
     worker.start();
