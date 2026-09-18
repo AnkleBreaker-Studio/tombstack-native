@@ -33,20 +33,40 @@ std::optional<std::string> Batch::drain_if_ready(const std::string &sent_at_iso,
                                                  std::chrono::steady_clock::time_point now,
                                                  bool force) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    if (items_.empty()) {
+    if (!ready(now, force)) {
         return std::nullopt;
     }
-    const bool by_count = items_.size() >= flush_count;
-    const bool by_age = (now - first_add_) >= flush_age;
-    if (!force && !by_count && !by_age) {
-        return std::nullopt;
-    }
+    return drain_locked(sent_at_iso);
+}
+
+bool Batch::ready(std::chrono::steady_clock::time_point now, bool force) const {
+    return !items_.empty() &&
+        (force || items_.size() >= flush_count || now - first_add_ >= flush_age);
+}
+
+std::vector<std::string> Batch::drain_envelopes_if_ready(const std::string &sent_at_iso,
+                                                      std::chrono::steady_clock::time_point now,
+                                                      bool force) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> envelopes;
+    if (!ready(now, force)) return envelopes;
+    while (!items_.empty()) envelopes.push_back(drain_locked(sent_at_iso));
+    return envelopes;
+}
+
+std::string Batch::drain_locked(const std::string &sent_at_iso) {
     std::vector<std::string> drained;
     drained.reserve(items_.size());
-    for (std::string &item : items_) {
-        drained.push_back(std::move(item));
+    auto bytes = build_batch_envelope(sent_at_iso, {}).size();
+    while (!items_.empty()) {
+        const auto next_bytes = items_.front().size() + (drained.empty() ? 0 : 1);
+        if (!drained.empty() && bytes + next_bytes > max_batch_bytes) break;
+        // Isolate an invalid oversized item so its rejection cannot discard valid neighbours.
+        bytes += next_bytes;
+        drained.push_back(std::move(items_.front()));
+        items_.pop_front();
+        if (bytes >= max_batch_bytes) break;
     }
-    items_.clear();
     return build_batch_envelope(sent_at_iso, drained);
 }
 

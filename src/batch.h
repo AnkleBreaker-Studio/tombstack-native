@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace tombstone {
 
@@ -28,6 +29,7 @@ class Batch {
 public:
     static constexpr std::size_t max_items = 256;
     static constexpr std::size_t flush_count = 50;
+    static constexpr std::size_t max_batch_bytes = 512 * 1024;
     static constexpr std::chrono::seconds flush_age{10};
 
     /** Append one serialized item, dropping the oldest when at capacity.
@@ -38,15 +40,19 @@ public:
     std::size_t size() const;
     bool has_items() const;
 
-    /** Drain into a batch envelope when a trigger fires (or `force` is set).
-     *  On success the buffer is emptied and the envelope returned; otherwise
-     *  nullopt (nothing buffered, or no trigger satisfied) and the buffer is
-     *  left intact. `now` is injected so the age trigger is testable. */
+    /** Drain one bounded envelope, retaining any remaining items for the next drain. */
     std::optional<std::string> drain_if_ready(const std::string &sent_at_iso,
                                               std::chrono::steady_clock::time_point now,
                                               bool force);
 
+    /** Drain the ready snapshot under one lock so concurrent producers cannot extend a flush. */
+    std::vector<std::string> drain_envelopes_if_ready(const std::string &sent_at_iso,
+                                                    std::chrono::steady_clock::time_point now,
+                                                    bool force);
+
 private:
+    bool ready(std::chrono::steady_clock::time_point now, bool force) const;
+    std::string drain_locked(const std::string &sent_at_iso);
     mutable std::mutex mutex_;
     std::deque<std::string> items_;
     std::chrono::steady_clock::time_point first_add_{};
