@@ -323,6 +323,20 @@ void Client::record_rtt_metric(double ms) {
     // K1: fold the upload round-trip into the metric stream. Reuses track_metric so it
     // shares the batch + correlation path; the metrics:batch upload that carries this
     // sample is flagged suppress_rtt, so a measurement can never recurse into itself.
+    //
+    // Sampled, at most one per rtt_sample_interval: each sample is a metric row like the
+    // game's own, counted against the plan's per-session allowance. One per successful
+    // upload (every heartbeat and every batch) used up most of a free plan's allowance,
+    // so the game's own events were refused.
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    const auto interval_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(rtt_sample_interval).count();
+    const long long last = last_rtt_sample_ns_.load(std::memory_order_relaxed);
+    if (last != 0 && now_ns - last < interval_ns) {
+        return;
+    }
+    last_rtt_sample_ns_.store(now_ns, std::memory_order_relaxed);
     (void)track_metric("tombstone.rtt_ms", ms, "ms");
 }
 

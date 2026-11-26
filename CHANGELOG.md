@@ -29,6 +29,10 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- The `tombstone.rtt_ms` self-metric (on by default) recorded one row per successful upload —
+  every heartbeat and every event batch — and on the free plan these rows used up most of the
+  per-session metric allowance, so the game's own events were refused. It is now sampled at
+  most once every 10 minutes. Set `enable_rtt_metric = 0` to turn it off.
 - The header and integration notes now state that no SDK call, `tombstone_report_crash`
   included, may be made from a signal handler or an exception filter: it can hang the crashing
   game instead of reporting the crash. Earlier notes suggested calling it from a top-level

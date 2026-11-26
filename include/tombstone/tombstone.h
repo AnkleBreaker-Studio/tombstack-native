@@ -138,8 +138,10 @@ typedef struct tombstone_options {
      *  `dev_...` id, never anonymous). Crash and bug reports are never
      *  deferred. */
     int auto_start_session;
-    /** Nonzero (default) = emit a `tombstone.rtt_ms` metric after each successful ingest
-     *  POST (the upload round-trip time). 0 disables this self-telemetry. */
+    /** Nonzero (default) = emit a `tombstone.rtt_ms` metric with the round-trip time of a
+     *  successful ingest POST, sampled at most once every 10 minutes: each sample is a
+     *  metric row like the game's own (counted toward the plan's per-session allowance).
+     *  0 disables this self-telemetry. */
     int enable_rtt_metric;
     /** EXPERIMENTAL (v0.9), default 0 (OFF): install the in-process native crash
      *  handler. When on, the SDK catches fatal signals (SIGSEGV/ABRT/BUS/ILL/

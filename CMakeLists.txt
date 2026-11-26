@@ -214,6 +214,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_client_preinit.cpp
     tests/test_client_shutdown.cpp
     tests/test_client_storage.cpp
+    tests/test_client_telemetry.cpp
     tests/test_worker_signing.cpp
     ${TOMBSTONE_CLIENT_TEST_SDK_SOURCES}
     $<TARGET_OBJECTS:tombstone_core>
@@ -226,7 +227,8 @@ if(TOMBSTONE_BUILD_TESTS)
   )
   target_link_libraries(tombstone_client_tests PRIVATE Threads::Threads tombstone_warnings)
 
-  foreach(suite client_consent client_preinit client_shutdown client_storage worker_signing)
+  foreach(suite client_consent client_preinit client_shutdown client_storage client_telemetry
+      worker_signing)
     add_test(NAME ${suite} COMMAND tombstone_client_tests ${suite})
   endforeach()
 

@@ -217,6 +217,10 @@ private:
 
     // K1 diagnostics: steady-clock ns of the last event/metric batch flush (0 = none).
     std::atomic<long long> last_flush_steady_ns_{0};
+    // tombstone.rtt_ms sampling: at most one sample per interval (steady-clock ns of the
+    // last one, 0 = none yet). Written from the worker thread only.
+    static constexpr std::chrono::minutes rtt_sample_interval{10};
+    std::atomic<long long> last_rtt_sample_ns_{0};
 
     // state
     std::atomic<bool> initialized_{false};
