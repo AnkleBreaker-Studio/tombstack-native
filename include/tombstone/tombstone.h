@@ -98,7 +98,12 @@ typedef struct tombstone_options {
     const char *token;
     /** Shipped with every payload (dashboard build filter). Required. */
     const char *build_version;
-    /** Writable directory for sidecars, session log, marker. NULL = platform default. */
+    /** Writable directory for sidecars, session log, marker. NULL = a directory
+     *  of this game's own under the platform default
+     *  (<base>/Tombstone/game-<16 hex>, derived from the token). A directory you
+     *  pass must belong to this game alone: one already used by a game with a
+     *  different token is never shared — the SDK then uses its own
+     *  game-<16 hex> subdirectory inside it. */
     const char *data_dir;
     /** Deployment environment stamped on every payload (e.g. "production",
      *  "staging", "dev"; clamped to 64). NULL/empty = unset (the server

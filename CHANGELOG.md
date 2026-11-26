@@ -7,6 +7,13 @@ the `tombstone` library name are stable — Tombstack is the product name).
 
 ### Fixed
 
+- Games that leave `data_dir` unset no longer share one folder on a player's machine. Each game
+  now keeps its pending reports, logs, crash dump and player identifier in a folder of its own
+  under the platform default (`Tombstone/game-<16 hex>`), and only ever sends them with its own
+  token. A `data_dir` you pass that is already used under another SDK token is not shared
+  either: the SDK uses its own subfolder inside it. Files earlier versions left in the shared
+  folder are not read or sent. The player identifier is derived again for the new folder and
+  stays the same on the same machine; a game that changes its SDK token starts new ones.
 - A device whose clock is more than five minutes off lost everything it sent: the server refused
   the request and the SDK deleted the crash or bug report. The SDK now takes the server's time from
   every response and uses it when signing, retrying at once with the corrected time, so these

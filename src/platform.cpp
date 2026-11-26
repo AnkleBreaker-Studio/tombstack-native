@@ -51,7 +51,7 @@ std::string env_or_empty(const char *name) {
 
 }  // namespace
 
-std::filesystem::path default_data_dir() {
+std::filesystem::path default_data_root() {
 #if defined(_WIN32)
     const std::string base = env_or_empty("LOCALAPPDATA");
     if (!base.empty()) {

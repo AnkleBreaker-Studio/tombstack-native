@@ -90,6 +90,7 @@ set(TOMBSTONE_CORE_SOURCES
   src/session_marker.cpp
   src/sidecar_queue.cpp
   src/signature.cpp
+  src/storage_owner.cpp
 )
 
 add_library(tombstone_core OBJECT ${TOMBSTONE_CORE_SOURCES})
@@ -205,6 +206,7 @@ if(TOMBSTONE_BUILD_TESTS)
   add_executable(tombstone_client_tests
     tests/main.cpp
     tests/fake_transport.cpp
+    tests/test_client_storage.cpp
     tests/test_worker_signing.cpp
     ${TOMBSTONE_CLIENT_TEST_SDK_SOURCES}
     $<TARGET_OBJECTS:tombstone_core>
@@ -217,7 +219,7 @@ if(TOMBSTONE_BUILD_TESTS)
   )
   target_link_libraries(tombstone_client_tests PRIVATE Threads::Threads tombstone_warnings)
 
-  foreach(suite worker_signing)
+  foreach(suite client_storage worker_signing)
     add_test(NAME ${suite} COMMAND tombstone_client_tests ${suite})
   endforeach()
 

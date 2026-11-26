@@ -108,7 +108,8 @@ is off nothing is recorded or sent — calls return `TOMBSTONE_DISABLED`.
 ## Shipping checklist
 
 - [ ] `build_version` matches the build you ship (dashboard filters by it).
-- [ ] `data_dir` points at a writable per-user location.
+- [ ] `data_dir` is left NULL (the SDK then uses a directory of this game's own)
+      or points at a writable per-user location used by this game only.
 - [ ] Engine log hooked into `tombstone_log_line`.
 - [ ] `tombstone_flush` + `tombstone_shutdown` on clean exit (otherwise the
       next launch reports an unclean shutdown — by design).

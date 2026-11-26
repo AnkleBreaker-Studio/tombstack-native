@@ -89,7 +89,9 @@ public:
 
 private:
     // --- lifecycle helpers (client.cpp) ---
-    void configure_storage();
+    /** Claim `requested` for this game (storage_owner.h) and set up every
+     *  disk-backed subsystem in the directory actually granted. */
+    void configure_storage(const std::filesystem::path &requested);
     /** v0.8: restore-or-derive the persistent device-derived provisional user
      *  id (the "dev_..." fallback identity). Runs once during init, right
      *  after configure_storage(). */

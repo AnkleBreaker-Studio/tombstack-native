@@ -7,6 +7,7 @@
 #include "payloads.h"
 #include "platform.h"
 #include "signature.h"
+#include "storage_owner.h"
 #include "transport.h"
 
 #include <algorithm>
@@ -146,10 +147,12 @@ tombstone_result Client::init(const tombstone_options &options) {
     heartbeat_interval_ = std::chrono::seconds{
         std::clamp(interval, min_heartbeat_interval_s, max_heartbeat_interval_s)};
 
-    data_dir_ = (options.data_dir != nullptr && options.data_dir[0] != '\0')
-                    ? fs::path{options.data_dir}
-                    : default_data_dir();
-    configure_storage();
+    // Storage belongs to one game: the default is a directory of this game's own,
+    // and a directory another game's token already owns is never shared
+    // (storage_owner.h). Nothing an older SDK left in the shared base is read.
+    configure_storage((options.data_dir != nullptr && options.data_dir[0] != '\0')
+                          ? fs::path{options.data_dir}
+                          : default_data_root() / storage_owner::game_dir_name(token_));
     // v0.9: install the native crash handler once storage is ready (dump fd +
     // module table). Opt-in + fail-soft: unsupported platforms / setup failure
     // just leave native_crash_enabled_ behavior to the unclean-shutdown
@@ -182,13 +185,12 @@ tombstone_result Client::init(const tombstone_options &options) {
     return TOMBSTONE_OK;
 }
 
-/** Resolve the data dir and wire up the disk-backed subsystems. Degrades to
- * memory-only operation (no sidecars, no session log) when the dir is unusable. */
-void Client::configure_storage() {
+/** Claim the data dir for this game and wire up the disk-backed subsystems. Degrades
+ * to memory-only operation (no sidecars, no session log) when the dir is unusable. */
+void Client::configure_storage(const fs::path &requested) {
     try {
-        std::error_code ec;
-        fs::create_directories(data_dir_, ec);
-        if (ec && !fs::exists(data_dir_, ec)) {
+        data_dir_ = storage_owner::claim(requested, storage_owner::storage_key(token_), sdk_log_);
+        if (data_dir_.empty()) {
             sdk_log_.warn("data dir unavailable; running without offline persistence");
             return;
         }
@@ -221,9 +223,10 @@ void Client::configure_storage() {
  * anonymous user. The id is "dev_" + 16 lowercase hex of FNV-1a-64 over the
  * machine id salted with the per-game ingest token — the raw machine id never
  * goes on the wire, and the same machine yields a different id per game. The
- * FILE WINS over a re-derive on later launches, so the id stays stable across
- * an ingest-token rotation. Fail-soft throughout: worst case (no machine id
- * AND no writable storage) is a random-but-well-formed id per launch.
+ * FILE WINS over a re-derive on later launches. Storage is per token
+ * (storage_owner.h), so a new token starts from a fresh directory and a new id.
+ * Fail-soft throughout: worst case (no machine id AND no writable storage) is a
+ * random-but-well-formed id per launch.
  */
 void Client::acquire_device_identity() {
     std::string id = read_persisted_identity();
