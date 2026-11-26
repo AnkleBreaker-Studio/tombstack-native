@@ -184,6 +184,7 @@ std::string build_crash_json(const CrashPayload &payload) {
     json.begin_object();
     common_context(json, payload.occurred_at_iso, payload.build_version, payload.os, payload.arch);
     clamped_field(json, "signature", payload.signature, limits::signature);
+    optional_field(json, "fingerprint", payload.fingerprint, limits::signature);
     clamped_field(json, "stackHint", payload.stack_hint, limits::stack_hint);
     optional_field(json, "stackTrace", payload.stack_trace, limits::stack_trace);
     breadcrumbs_field(json, payload.breadcrumbs);

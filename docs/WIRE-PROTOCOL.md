@@ -70,6 +70,11 @@ enum would fail validation).
 - The synthetic unclean-shutdown report uses the constant signature
   `unclean-shutdown` and the previous session's buildVersion/os/arch from the
   `session.lock` marker.
+- A native-crash-handler report (`crashType` `native_crash`/`signal`, plus
+  `osSignal`) also sends its signature as `fingerprint` (≤128), the grouping
+  key the server uses as is: its `stackTrace` frames are unsymbolicated
+  `module+0x<offset> <build-id>` lines, whose offsets server-side stack
+  grouping would drop.
 
 ## POST /api/v1/ingest/bug-reports → `201 { bugId, logUpload? }`
 

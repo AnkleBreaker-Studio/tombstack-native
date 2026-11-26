@@ -138,6 +138,10 @@ struct CrashPayload {
     std::string os;
     std::string arch;
     std::string signature;
+    /** Grouping key the server must use as is (it overrides its own stack-based grouping);
+     *  empty -> omitted. Sent for native-handler reports, whose module+offset frames the
+     *  server's stack grouping would otherwise collapse to one issue per module. */
+    std::string fingerprint;
     std::string stack_hint;
     std::string stack_trace;             // empty -> omitted
     std::vector<Breadcrumb> breadcrumbs; // empty -> omitted

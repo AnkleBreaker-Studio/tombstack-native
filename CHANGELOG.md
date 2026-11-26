@@ -29,6 +29,8 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- Crash reports from the native crash handler now carry their precise grouping key, so crashes
+  at different places in the same library and build appear as separate issues instead of one.
 - A device number outside the server's range in `tombstone_set_device` (RAM in KB instead of
   MB, a refresh rate in mHz, more than 4096 cores) made the server refuse every crash and bug
   report from that build, which were then deleted. Such a number is now left out of the

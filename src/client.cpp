@@ -484,6 +484,10 @@ void Client::report_native_crash(const SessionMarkerData &previous, const Native
     // Signature over the native frames (falls back to the signal when frames
     // were unresolved) — mirrors compute_crash_signature's hint+frames hashing.
     payload.signature = compute_crash_signature(sig_name, frames_text);
+    // Sent as the grouping key too: the server's own stack grouping drops the
+    // 0x offsets of these unsymbolicated frames, which would merge every crash
+    // site in a module (and build) into a single issue.
+    payload.fingerprint = payload.signature;
     payload.stack_hint = "Native crash: " + sig_name + " at " + fault;
     payload.stack_trace = frames_text;
     payload.user_id = current_user_id();
