@@ -171,19 +171,25 @@ tombstone_result Client::init(const tombstone_options &options) {
     if (rtt_metric_enabled_) {
         worker_->set_rtt_handler([this](double ms) { record_rtt_metric(ms); });
     }
-    worker_->start();
 
+    // Captures are accepted from here on, but nothing is sent before start(): the C
+    // layer replays the pre-init calls in between, so the first heartbeat already
+    // carries the identity / environment the game set before init.
     initialized_ = true;
+    return TOMBSTONE_OK;
+}
 
+void Client::start() {
+    worker_->start();
     if (heartbeats_enabled_) {
         heartbeat_thread_ = std::thread{[this] { heartbeat_loop(); }};
     }
+    const std::lock_guard<std::mutex> lock(consent_mutex_);
     if (consent_) {
         // Without consent, what earlier sessions left pending stays on disk, unsent,
         // until tombstone_set_consent(1).
         on_consent_granted();
     }
-    return TOMBSTONE_OK;
 }
 
 /** Claim the data dir for this game and wire up the disk-backed subsystems. Degrades

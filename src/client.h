@@ -51,7 +51,12 @@ public:
     Client(Client &&) = delete;
     Client &operator=(Client &&) = delete;
 
+    /** Apply the options and set up storage; sends and starts nothing. */
     tombstone_result init(const tombstone_options &options);
+    /** Start delivery: the worker and heartbeat threads, then — with consent —
+     *  earlier sessions' pending reports and session tracking. Called once,
+     *  after the pre-init replay, before the client is published. */
+    void start();
 
     tombstone_result set_user(const char *user_id, const char *steam_id);
     tombstone_result set_consent(bool granted);

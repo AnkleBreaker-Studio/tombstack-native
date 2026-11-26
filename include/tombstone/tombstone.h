@@ -27,7 +27,10 @@
  * breadcrumbs 64 drop-oldest; events+metrics 128 combined drop-newest;
  * last-write-wins for identity/environment/metadata/consent) and are replayed
  * in order at init, AFTER the options are applied — an explicit pre-init Set*
- * beats the matching init option.
+ * beats the matching init option — and before anything is sent. A pre-init
+ * tombstone_set_consent() governs init itself: with 0, init sends nothing (no
+ * heartbeat, no report left pending by an earlier session) until consent is
+ * granted.
  */
 
 #include <stddef.h>
