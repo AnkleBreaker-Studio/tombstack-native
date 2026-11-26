@@ -50,6 +50,16 @@ Response answer(Request request) {
     return response;
 }
 
+std::mutex g_abort_mutex;
+std::condition_variable g_abort_cv;
+
+/** Hang like a black-holed request until `aborting` is raised (bounded), then fail. */
+tombstone::HttpResponse hang_until_abort(const std::atomic<bool> &aborting) {
+    std::unique_lock<std::mutex> lock(g_abort_mutex);
+    g_abort_cv.wait_for(lock, std::chrono::seconds{30}, [&] { return aborting.load(); });
+    return tombstone::HttpResponse{};  // transport_error = true
+}
+
 tombstone::HttpResponse to_http(const Response &response) {
     tombstone::HttpResponse out;
     out.transport_error = response.transport_error;
@@ -126,20 +136,39 @@ Transport::Transport(SdkLog &sdk_log) : sdk_log_(sdk_log) {}
 
 Transport::~Transport() = default;
 
+void Transport::abort_inflight() noexcept {
+    aborting_.store(true);
+    try {
+        const std::lock_guard<std::mutex> lock(fake_transport::g_abort_mutex);
+    } catch (...) {
+    }
+    fake_transport::g_abort_cv.notify_all();
+}
+
 HttpResponse Transport::post_json(const std::string &url, const std::string & /*token*/,
                                   const std::string &body, long /*timeout_seconds*/, bool sign,
                                   std::int64_t sign_unix_seconds) {
     sdk_log_.debug("fake transport: POST " + url);  // keeps the shared member in use (clang)
+    if (aborting_.load()) {
+        return HttpResponse{};  // shutting down: fail at once, like the libcurl transport
+    }
     fake_transport::Request request;
     request.url = url;
     request.body = body;
     request.signed_body = sign;
     request.sign_unix_seconds = sign_unix_seconds;
-    return fake_transport::to_http(fake_transport::answer(std::move(request)));
+    const fake_transport::Response response = fake_transport::answer(std::move(request));
+    if (response.hang_until_abort) {
+        return fake_transport::hang_until_abort(aborting_);
+    }
+    return fake_transport::to_http(response);
 }
 
 HttpResponse Transport::put_text(const std::string &url, const std::vector<char> &bytes,
                                  long /*timeout_seconds*/) {
+    if (aborting_.load()) {
+        return HttpResponse{};
+    }
     fake_transport::Request request;
     request.url = url;
     request.body.assign(bytes.begin(), bytes.end());
@@ -150,6 +179,9 @@ HttpResponse Transport::put_text(const std::string &url, const std::vector<char>
 HttpResponse Transport::post_log(const std::string &url,
                                  const std::vector<std::pair<std::string, std::string>> & /*fields*/,
                                  const std::vector<char> &bytes, long /*timeout_seconds*/) {
+    if (aborting_.load()) {
+        return HttpResponse{};
+    }
     fake_transport::Request request;
     request.url = url;
     request.body.assign(bytes.begin(), bytes.end());

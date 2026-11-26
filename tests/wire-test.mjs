@@ -18,6 +18,9 @@ const server = createServer(async (req, res) => {
     for await (const part of req) parts.push(part);
     const body = Buffer.concat(parts);
     counts.set(req.url, (counts.get(req.url) ?? 0) + 1);
+    if (req.url === "/hang") {
+      return; // a black-holed request: never answered
+    }
     if (req.url === "/skew") {
       // Mirrors the server's signature check: a signature more than 300 s from the server clock is a
       // 401 invalid_signature. The SDK must learn the clock from this reply's Date and retry.
@@ -102,7 +105,21 @@ try {
   for (const log of logs) assert.deepEqual(log, logs[0]);
   assert.equal(counts.get("/skew"), 2, "a stale signature is retried once, with the server's clock");
   assert.equal(skewAccepted.length, 1);
-  console.log("PASS: signed ingest, multipart log POST, retry, binary bytes, no credential leak, legacy PUT, invalid descriptor, server-clock signing");
+  // Shutdown with a request the server never answers: stop() must cancel it, not wait out the
+  // 15 s request timeout. The probe gives up flushing after 500 ms and must exit soon after.
+  const hangStarted = Date.now();
+  const hangExit = await new Promise((resolve, reject) => {
+    const env = { ...process.env, TOMBSTACK_WIRE_FLUSH_MS: "500" };
+    delete env.TOMBSTACK_WIRE_BODY;
+    delete env.TOMBSTACK_WIRE_RESPONSE;
+    const child = spawn(process.argv[2], [`${base}/hang`, join(scratch, "hang")], { env, stdio: "inherit" });
+    child.on("error", reject);
+    child.on("exit", code => resolve(code));
+  });
+  const hangMs = Date.now() - hangStarted;
+  assert.equal(hangExit, 1, "the hung request is reported as not drained");
+  assert.ok(hangMs < 5000, `shutdown took ${hangMs} ms with a hung request`);
+  console.log("PASS: signed ingest, multipart log POST, retry, binary bytes, no credential leak, legacy PUT, invalid descriptor, server-clock signing, prompt shutdown");
 } finally {
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

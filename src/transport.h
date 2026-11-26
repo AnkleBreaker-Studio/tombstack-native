@@ -1,6 +1,7 @@
 #ifndef TOMBSTONE_SRC_TRANSPORT_H
 #define TOMBSTONE_SRC_TRANSPORT_H
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -68,8 +69,19 @@ public:
                           const std::vector<std::pair<std::string, std::string>> &fields,
                           const std::vector<char> &bytes, long timeout_seconds);
 
+    /**
+     * Abort the request in progress, and fail any later one at once (shutdown):
+     * quitting the game must never wait out a network timeout. One-way and
+     * thread-safe; the aborted request comes back as a transport error.
+     */
+    void abort_inflight() noexcept;
+
+    /** Connection setup (DNS, TCP, TLS) gives up after this long. */
+    static constexpr long connect_timeout_seconds = 5;
+
 private:
     SdkLog &sdk_log_;
+    std::atomic<bool> aborting_{false};
 };
 
 }  // namespace tombstone

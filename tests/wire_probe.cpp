@@ -42,7 +42,12 @@ int main(int argc, char **argv) {
     job.no_persist = true;
     worker.enqueue(std::move(job));
     worker.start();
-    const bool drained = worker.flush(std::chrono::seconds{20});
+    // TOMBSTACK_WIRE_FLUSH_MS shortens the wait (the shutdown test: stop() must then
+    // cancel a request the server never answers instead of waiting out its timeout).
+    const char *flush_ms = std::getenv("TOMBSTACK_WIRE_FLUSH_MS");
+    const std::chrono::milliseconds flush_timeout =
+        flush_ms ? std::chrono::milliseconds{std::atoi(flush_ms)} : std::chrono::seconds{20};
+    const bool drained = worker.flush(flush_timeout);
     worker.stop();
     return drained ? 0 : 1;
 }

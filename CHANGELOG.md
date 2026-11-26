@@ -29,6 +29,11 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- Quitting while the network does not answer (captive portal, firewall, server not
+  responding) could freeze the game for up to about 30 s inside `tombstone_shutdown` or at
+  process exit. Shutdown now cancels the request in progress after its 2 s delivery window,
+  so it returns in about 3 s at most; what could not be delivered is kept for the next launch.
+  Connecting to the server also gives up after 5 s instead of the whole request timeout.
 - A device whose clock is more than five minutes off lost everything it sent: the server refused
   the request and the SDK deleted the crash or bug report. The SDK now takes the server's time from
   every response and uses it when signing, retrying at once with the corrected time, so these

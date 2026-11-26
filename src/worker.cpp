@@ -81,6 +81,10 @@ void Worker::stop() {
         running_ = false;
     }
     cv_.notify_all();
+    // Cancel a request still on the wire so the join below never waits out a
+    // network timeout (up to 30 s for a log upload): the aborted job comes back
+    // as a transport error and is persisted with the other leftovers.
+    transport_.abort_inflight();
     if (thread_.joinable()) {
         thread_.join();
     }

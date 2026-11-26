@@ -5,6 +5,7 @@
 
 #include <curl/curl.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -87,6 +88,15 @@ extern "C" size_t tombstone_curl_header(char *data, size_t size, size_t count, v
     return total;
 }
 
+/** Progress callback: libcurl calls it frequently while a transfer runs (about
+ *  once a second when idle, during connection setup too) and aborts the
+ *  transfer when it returns nonzero — how shutdown cancels an in-flight request. */
+extern "C" int tombstone_curl_progress(void *aborting, curl_off_t /*dltotal*/,
+                                       curl_off_t /*dlnow*/, curl_off_t /*ultotal*/,
+                                       curl_off_t /*ulnow*/) {
+    return static_cast<const std::atomic<bool> *>(aborting)->load() ? 1 : 0;
+}
+
 struct CurlHandleDeleter {
     void operator()(CURL *handle) const noexcept { curl_easy_cleanup(handle); }
 };
@@ -106,15 +116,24 @@ CurlSlist append_header(CurlSlist list, const char *header) {
     return list;
 }
 
-HttpResponse perform(CURL *handle, SdkLog &sdk_log) {
+HttpResponse perform(CURL *handle, SdkLog &sdk_log, std::atomic<bool> &aborting) {
     std::string body;
     HeaderCapture headers;
+    if (aborting.load()) {
+        return HttpResponse{};  // shutting down: fail at once (transport_error = true)
+    }
     curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, tombstone_curl_write);
     curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, tombstone_curl_header);
     curl_easy_setopt(handle, CURLOPT_HEADERDATA, &headers);
     curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L);
+    // A black-holed network must not hold a request (or the quit) for the whole
+    // transfer timeout: connection setup is bounded, and shutdown aborts the rest.
+    curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, Transport::connect_timeout_seconds);
+    curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(handle, CURLOPT_XFERINFOFUNCTION, tombstone_curl_progress);
+    curl_easy_setopt(handle, CURLOPT_XFERINFODATA, &aborting);
     // Assert TLS verification explicitly rather than inheriting the integrator's libcurl defaults:
     // this SDK ships a Bearer ingest token to a remote endpoint and must not accept an untrusted or
     // MITM'd cert even if the host build flipped the defaults. (libcurl defaults to these today.)
@@ -142,6 +161,8 @@ HttpResponse perform(CURL *handle, SdkLog &sdk_log) {
 Transport::Transport(SdkLog &sdk_log) : sdk_log_(sdk_log) { curl_global_acquire(); }
 
 Transport::~Transport() { curl_global_release(); }
+
+void Transport::abort_inflight() noexcept { aborting_.store(true); }
 
 HttpResponse Transport::post_json(const std::string &url, const std::string &token,
                                   const std::string &body, long timeout_seconds, bool sign,
@@ -179,7 +200,7 @@ HttpResponse Transport::post_json(const std::string &url, const std::string &tok
                          static_cast<long>(body.size()));
         curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, headers.get());
         curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT, timeout_seconds);
-        return perform(handle.get(), sdk_log_);
+        return perform(handle.get(), sdk_log_, aborting_);
     } catch (...) {
         return HttpResponse{};
     }
@@ -204,7 +225,7 @@ HttpResponse Transport::put_text(const std::string &url, const std::vector<char>
                          static_cast<long>(bytes.size()));
         curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, headers.get());
         curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT, timeout_seconds);
-        return perform(handle.get(), sdk_log_);
+        return perform(handle.get(), sdk_log_, aborting_);
     } catch (...) {
         return HttpResponse{};
     }
@@ -234,7 +255,7 @@ HttpResponse Transport::post_log(const std::string &url,
         curl_easy_setopt(handle.get(), CURLOPT_URL, url.c_str());
         curl_easy_setopt(handle.get(), CURLOPT_MIMEPOST, form.get());
         curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT, timeout_seconds);
-        return perform(handle.get(), sdk_log_);
+        return perform(handle.get(), sdk_log_, aborting_);
     } catch (...) {
         return HttpResponse{};
     }

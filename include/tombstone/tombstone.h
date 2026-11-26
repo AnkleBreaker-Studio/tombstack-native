@@ -169,7 +169,10 @@ TOMBSTONE_API tombstone_result tombstone_init(const tombstone_options *options);
 /**
  * Clean shutdown: flushes the session log, persists undelivered durable
  * payloads as sidecars, deletes the unclean-shutdown marker, and joins the
- * background threads. Idempotent.
+ * background threads. Idempotent. Bounded even when the network does not
+ * answer: it gives in-flight deliveries about 2 s, then cancels the request
+ * still in progress (persisting what is durable), so it returns in about
+ * 3 s at most.
  */
 TOMBSTONE_API tombstone_result tombstone_shutdown(void);
 

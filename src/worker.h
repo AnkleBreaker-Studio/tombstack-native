@@ -96,7 +96,8 @@ public:
 
     void start();
 
-    /** Stop the thread; durable undelivered jobs are persisted as sidecars. */
+    /** Stop the thread, aborting any request in progress (Transport::abort_inflight);
+     *  durable undelivered jobs are persisted as sidecars. Returns promptly. */
     void stop();
 
     /** Queue a job (thread-safe). Oldest entry is dropped when full. */

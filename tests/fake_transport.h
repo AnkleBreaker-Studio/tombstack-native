@@ -29,6 +29,9 @@ struct Response {
     std::string body{R"({"success":true,"data":{}})"};
     std::string retry_after;
     std::string date;
+    /** A black-holed network: the request hangs until Transport::abort_inflight()
+     *  (or 30 s), then fails as a transport error, as an aborted libcurl transfer does. */
+    bool hang_until_abort{false};
 };
 
 /** Forget every request and scripted response; the default answer becomes a plain 202. */
