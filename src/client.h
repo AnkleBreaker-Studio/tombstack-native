@@ -230,6 +230,7 @@ private:
 
     // state
     std::atomic<bool> initialized_{false};
+    bool started_{false};  // the worker thread runs (set by start(); read by the destructor)
     std::atomic<bool> consent_{true};
     // v0.7 send gate (Unity 0.15 parity): until this one-way latch is set, the
     // heartbeat loop sends NOTHING and event/metric batch DRAINS are held

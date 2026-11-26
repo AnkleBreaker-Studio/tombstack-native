@@ -74,8 +74,12 @@ void Worker::start() {
 
 void Worker::stop() {
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (!running_) {
+            // Never started (or already stopped): still keep what is queued — a
+            // second call finds the queue empty.
+            lock.unlock();
+            persist_leftovers();
             return;
         }
         running_ = false;

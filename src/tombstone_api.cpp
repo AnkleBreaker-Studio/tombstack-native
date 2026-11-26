@@ -180,8 +180,10 @@ tombstone_result tombstone_init(const tombstone_options *options) {
             // publishing — a concurrent capture call blocks on g_client_mutex and
             // then lands on g_client.
             replay_preinit(*fresh, g_preinit);
-            g_preinit.clear();
             fresh->start();
+            // Cleared only once the client really runs: if start() throws, a retried
+            // tombstone_init still sees the pre-init choices (consent above all).
+            g_preinit.clear();
             g_client = std::move(fresh);
         }
         return TOMBSTONE_OK;

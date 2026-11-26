@@ -101,9 +101,12 @@ Client::~Client() {
         }
         if (worker_) {
             // Quit flush (spec section 16): drain buffered events/metrics and
-            // give the worker a bounded window to deliver before we tear down.
+            // give the worker a bounded window to deliver before we tear down —
+            // unless its thread never ran (start() failed), when nothing could.
             flush_all_batches();
-            worker_->flush(std::chrono::milliseconds{2000});
+            if (started_) {
+                worker_->flush(std::chrono::milliseconds{2000});
+            }
             worker_->stop();  // persists durable leftovers as sidecars
         }
         if (storage_available_ && owns_instance_) {
@@ -197,6 +200,7 @@ tombstone_result Client::init(const tombstone_options &options) {
 
 void Client::start() {
     worker_->start();
+    started_ = true;
     if (heartbeats_enabled_) {
         heartbeat_thread_ = std::thread{[this] { heartbeat_loop(); }};
     }
