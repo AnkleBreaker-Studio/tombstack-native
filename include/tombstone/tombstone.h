@@ -110,7 +110,10 @@ typedef struct tombstone_options {
      *  different token is never shared — the SDK then uses its own
      *  game-<16 hex> subdirectory inside it. Required on Android, which has no
      *  writable default (pass the app's files directory): without it the SDK
-     *  runs with no offline queue, session log or unclean-shutdown detection. */
+     *  runs with no offline queue, session log or unclean-shutdown detection.
+     *  Several processes of one game may share it: the first one owns the
+     *  session marker, session log and crash dump and sends what earlier
+     *  sessions left pending; the others send only their own reports. */
     const char *data_dir;
     /** Deployment environment stamped on every payload (e.g. "production",
      *  "staging", "dev"; clamped to 64). NULL/empty = unset (the server

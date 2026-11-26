@@ -76,6 +76,7 @@ set(TOMBSTONE_CORE_SOURCES
   src/dedupe.cpp
   src/device_identity.cpp
   src/frame_stats.cpp
+  src/instance_lock.cpp
   src/json_scan.cpp
   src/json_writer.cpp
   src/native_crash.cpp
@@ -171,6 +172,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_device_identity.cpp
     tests/test_frame_stats.cpp
     tests/test_header_contract.cpp
+    tests/test_instance_lock.cpp
     tests/test_json_scan.cpp
     tests/test_json_writer.cpp
     tests/test_native_crash.cpp
@@ -199,7 +201,7 @@ if(TOMBSTONE_BUILD_TESTS)
 
   foreach(suite
       batch breadcrumb_ring clock concurrency dedupe device_identity frame_stats header_contract
-      json_scan json_writer native_crash payloads platform preinit retry_after sampler server_clock
+      instance_lock json_scan json_writer native_crash payloads platform preinit retry_after sampler server_clock
       session_log session_marker sidecar signature start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()
@@ -212,6 +214,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/main.cpp
     tests/fake_transport.cpp
     tests/test_client_consent.cpp
+    tests/test_client_instances.cpp
     tests/test_client_native_report.cpp
     tests/test_client_preinit.cpp
     tests/test_client_shutdown.cpp
@@ -229,8 +232,8 @@ if(TOMBSTONE_BUILD_TESTS)
   )
   target_link_libraries(tombstone_client_tests PRIVATE Threads::Threads tombstone_warnings)
 
-  foreach(suite client_consent client_native_report client_preinit client_shutdown client_storage
-      client_telemetry worker_signing)
+  foreach(suite client_consent client_instances client_native_report client_preinit
+      client_shutdown client_storage client_telemetry worker_signing)
     add_test(NAME ${suite} COMMAND tombstone_client_tests ${suite})
   endforeach()
 

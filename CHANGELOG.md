@@ -29,6 +29,11 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- Running two processes of the same game on one machine (a second instance, a launcher
+  relaunch, a client next to a dedicated server) no longer files a false "unclean shutdown"
+  for the first one, no longer sends its pending reports twice, and no longer leaves the first
+  one's real crash undetected after the second quits. The first process owns the session
+  tracking, session log and crash dump; the others send their own reports only.
 - Events and metrics that could not be delivered were lost when the player was offline for more
   than about a minute or quit while offline, although the header said they were kept. They are
   now kept on disk (`pending/events-batch`, `pending/metrics-batch`) and sent at a later launch,

@@ -106,7 +106,7 @@ Client::~Client() {
             worker_->flush(std::chrono::milliseconds{2000});
             worker_->stop();  // persists durable leftovers as sidecars
         }
-        if (storage_available_) {
+        if (storage_available_ && owns_instance_) {
             marker_.remove();  // clean shutdown: next launch sees no dirty marker
         }
     } catch (...) {
@@ -214,6 +214,18 @@ void Client::configure_storage(const fs::path &requested) {
         storage_available_ = true;
         sidecars_.configure(data_dir_);
         marker_.configure(data_dir_);
+        owns_instance_ = instance_lock_.try_acquire(data_dir_);
+        if (!owns_instance_) {
+            // Another process of this game is running on this directory: its session
+            // marker, session log and crash dump are its own, and so are the files
+            // earlier sessions left pending. Reports from this process still go out.
+            sdk_log_.info("another process of this game uses the data directory: running "
+                          "without unclean-shutdown detection, session log and crash dump");
+            session_log_enabled_ = false;
+            unclean_detection_enabled_ = false;
+            native_crash_enabled_ = false;
+            return;
+        }
         if (session_log_enabled_) {
             session_log_.configure(data_dir_);
             had_previous_log_ = session_log_.rotate_for_new_session();
@@ -362,7 +374,9 @@ void Client::forget_device_identity() {
 }
 
 void Client::on_consent_granted() {
-    if (!sidecars_drained_) {
+    // Only the process owning the directory sends what earlier sessions left pending:
+    // a second process of the game would send the same files a second time.
+    if (!sidecars_drained_ && owns_instance_) {
         sidecars_drained_ = true;
         drain_sidecars();
     }
@@ -388,7 +402,9 @@ void Client::purge_for_revoked_consent() {
         if (session_log_enabled_) {
             session_log_.clear();
         }
-        marker_.remove();
+        if (owns_instance_) {
+            marker_.remove();
+        }
     }
     {
         const std::lock_guard<std::mutex> lock(session_tracking_mutex_);

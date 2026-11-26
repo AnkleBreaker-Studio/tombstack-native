@@ -7,6 +7,7 @@
 #include "breadcrumb_ring.h"
 #include "dedupe.h"
 #include "frame_stats.h"
+#include "instance_lock.h"
 #include "native_crash.h"
 #include "payloads.h"
 #include "sampler.h"
@@ -215,6 +216,10 @@ private:
     bool unclean_detection_enabled_{true};
     bool rtt_metric_enabled_{true};
     bool storage_available_{false};
+    // The process that holds the data directory's instance lock owns the session
+    // marker, session log, crash dump and the drain of earlier sessions' files.
+    InstanceLock instance_lock_;
+    bool owns_instance_{false};
 
     // K1 diagnostics: steady-clock ns of the last event/metric batch flush (0 = none).
     std::atomic<long long> last_flush_steady_ns_{0};
