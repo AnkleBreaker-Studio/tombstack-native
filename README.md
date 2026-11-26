@@ -30,7 +30,8 @@ opt.token = "tmb_...";            /* per-game SDK token */
 opt.build_version = "1.4.2";
 tombstone_init(&opt);
 tombstone_add_breadcrumb(TOMBSTONE_LEVEL_INFO, "boot complete");
-tombstone_report_crash(NULL, "Access violation in Renderer", stack_text, 1);
+/* From a normal thread — never from a signal handler or an exception filter. */
+tombstone_report_crash(NULL, "Script error in Renderer", stack_text, 1);
 ```
 
 Call `tombstone_flush(timeout_ms)` before exit and `tombstone_shutdown()` on
@@ -88,7 +89,10 @@ diagnostics).
 - **Godot (GDExtension / C++ modules)**: link the shared library and call the
   C API directly; hook `OS::get_singleton()` logging.
 - **Custom engines**: link, init, pipe your logger into `tombstone_log_line`,
-  call `tombstone_report_crash` from your existing top-level exception filter.
+  call `tombstone_report_crash` where your engine learns about failures on a
+  normal thread (script errors, asserts). It is not async-signal-safe: never
+  call it from a signal handler or an exception filter — a crash the process
+  cannot survive is reported at the next launch (unclean-shutdown detection).
 - **C#/other runtimes**: standard P/Invoke / FFI against the C ABI.
 
 See [docs/INTEGRATION.md](docs/INTEGRATION.md) for per-engine notes and

@@ -29,6 +29,11 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- The header and integration notes now state that no SDK call, `tombstone_report_crash`
+  included, may be made from a signal handler or an exception filter: it can hang the crashing
+  game instead of reporting the crash. Earlier notes suggested calling it from a top-level
+  exception filter or Unreal's crash path. Report errors the game survives from a normal
+  thread; a crash the process cannot survive is reported at the next launch.
 - With `enable_native_crash_handler` on (Linux/Android), a fault that a handler installed
   earlier resolves — a Mono or CoreCLR runtime turning a null dereference or a division by
   zero into a managed exception, for example — no longer ends the game, and is not reported

@@ -8,6 +8,8 @@
  * Every entry point returns a tombstone_result. The SDK is fail-silent by
  * design: internal failures degrade to result codes and (optionally) lines on
  * the user-provided log callback — never to console output or exceptions.
+ * No entry point is async-signal-safe: never call the SDK from a signal
+ * handler or an exception filter (see tombstone_report_crash).
  *
  * The SDK binds to one implicit process-wide client (tombstone_handle is the
  * opaque type reserved for a future multi-instance API). Double-init and
@@ -416,6 +418,15 @@ TOMBSTONE_API void tombstone_report_frame(double frame_ms);
  * upload slot. Write-ahead durable: persisted to disk before the first upload
  * attempt. Deduped per signature (<= 1 report/min; repeats return
  * TOMBSTONE_SUPPRESSED and become a counter breadcrumb).
+ *
+ * NOT async-signal-safe: it allocates, takes locks and writes files on the
+ * caller's thread. Never call it from a signal handler, a SEH / vectored
+ * exception filter or any other crash-time context — a fault while the heap
+ * lock or an SDK lock is held would hang the game instead of reporting the
+ * crash. Call it from a normal thread (a script-VM error hook, an assert
+ * handler, an engine crash-reporter thread). A crash the process cannot
+ * survive is covered by the unclean-shutdown report at the next launch (and,
+ * on Linux/Android, by options.enable_native_crash_handler).
  */
 TOMBSTONE_API tombstone_result tombstone_report_crash(const char *signature,
                                                       const char *stack_hint,

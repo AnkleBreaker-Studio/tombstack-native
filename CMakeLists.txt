@@ -170,6 +170,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_dedupe.cpp
     tests/test_device_identity.cpp
     tests/test_frame_stats.cpp
+    tests/test_header_contract.cpp
     tests/test_json_scan.cpp
     tests/test_json_writer.cpp
     tests/test_native_crash.cpp
@@ -191,11 +192,14 @@ if(TOMBSTONE_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/tests
   )
   target_link_libraries(tombstone_tests PRIVATE Threads::Threads tombstone_warnings)
+  # test_header_contract.cpp reads the public header from the source tree.
+  target_compile_definitions(tombstone_tests PRIVATE
+    "TOMBSTONE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
   foreach(suite
-      batch breadcrumb_ring clock concurrency dedupe device_identity frame_stats json_scan
-      json_writer native_crash payloads preinit retry_after sampler server_clock session_log
-      session_marker sidecar signature start_gate)
+      batch breadcrumb_ring clock concurrency dedupe device_identity frame_stats header_contract
+      json_scan json_writer native_crash payloads preinit retry_after sampler server_clock
+      session_log session_marker sidecar signature start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()
 
