@@ -85,7 +85,8 @@ the `tombstone` library name are stable — Tombstack is the product name).
 - Crash and bug reports whose text holds bytes that are not valid UTF-8 (a Windows path or a
   system error message in a local code page, in the stack hint, a log line or a breadcrumb) were
   refused by the server and then deleted. Each invalid sequence is now sent as the Unicode
-  replacement character, so these reports arrive.
+  replacement character, so these reports arrive. Reports of this kind that an earlier
+  version left waiting on disk are cleaned the same way when they are sent.
 
 ## [0.9.4] - 2026-09-18
 

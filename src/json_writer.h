@@ -19,6 +19,14 @@ namespace tombstone {
 std::string json_escape(std::string_view value);
 
 /**
+ * `value` with each ill-formed UTF-8 sequence replaced by U+FFFD (the bytes EF BF BD),
+ * by the same rule as json_escape. For stored bodies written before json_escape
+ * guaranteed well-formed UTF-8: inside a JSON string the raw replacement character is
+ * valid, so the body stays valid JSON and its signature verifies once sent.
+ */
+std::string utf8_sanitized(std::string_view value);
+
+/**
  * Truncate to at most `max_bytes`, backing off so a multi-byte UTF-8 sequence
  * is never split (a split sequence would be invalid UTF-8 on the wire).
  */

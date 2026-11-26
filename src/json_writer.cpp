@@ -122,6 +122,27 @@ std::string json_escape(std::string_view value) {
     return out;
 }
 
+std::string utf8_sanitized(std::string_view value) {
+    std::string out;
+    out.reserve(value.size());
+    for (std::size_t pos = 0; pos < value.size();) {
+        if (static_cast<unsigned char>(value[pos]) < 0x80U) {
+            out += value[pos];
+            ++pos;
+            continue;
+        }
+        std::size_t consumed = 1;
+        const std::size_t length = utf8_sequence_length(value, pos, consumed);
+        if (length > 0) {
+            out.append(value.data() + pos, length);
+        } else {
+            out += "\xEF\xBF\xBD";
+        }
+        pos += consumed;
+    }
+    return out;
+}
+
 std::string_view utf8_safe_truncate(std::string_view value, std::size_t max_bytes) noexcept {
     if (value.size() <= max_bytes) {
         return value;

@@ -359,7 +359,9 @@ void Client::drain_sidecars() {
         }
         UploadJob job;
         job.url = endpoint_ + ingest_path_for(record.kind);
-        job.body = std::move(record.body);
+        // A file an earlier version wrote may hold bytes that are not UTF-8: the server
+        // could never verify its signature, and it would be retried on every launch.
+        job.body = utf8_sanitized(record.body);
         job.durability = Durability::write_ahead;
         job.kind = record.kind;
         job.sidecar_path = record.path;

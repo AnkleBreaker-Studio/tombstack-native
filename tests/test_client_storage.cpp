@@ -193,6 +193,23 @@ TEST_CASE("client_storage", "a LOCALAPPDATA outside the ANSI code page still hol
 }
 #endif
 
+TEST_CASE("client_storage", "a pending report an older version wrote in a code page is sent as UTF-8") {
+    // 0.9.4 copied bytes >= 0x80 verbatim: this file holds a lone Latin-1 "é" (0xE9).
+    ttest::TempDir dir;
+    write_file(dir.path() / "pending" / "crashes" / "1700000000000-eeeeeeee.json",
+               "{\"occurredAtIso\":\"2026-11-01T00:00:00.000Z\",\"buildVersion\":\"1.0.0\","
+               "\"os\":\"windows\",\"arch\":\"x64\",\"signature\":\"sig-latin1\","
+               "\"stackHint\":\"Acc\xE8s refus\xE9\",\"log\":false}");
+    fake_transport::reset();
+    {
+        const SdkSession session{kTokenA, dir.path().string()};
+        CHECK(session.ok());
+        CHECK(tombstone_flush(5000) == TOMBSTONE_OK);
+    }
+    CHECK_EQ(count_bodies("/ingest/crashes", "Acc\xEF\xBF\xBDs refus\xEF\xBF\xBD"), std::size_t{1});
+    CHECK_EQ(count_bodies("/ingest/crashes", "\xE8s"), std::size_t{0});
+}
+
 TEST_CASE("client_storage", "a directory from before ownership existed is claimed by its game") {
     ttest::TempDir legacy;
     // A game that already passed its own data_dir to an older SDK keeps its pending reports.

@@ -44,6 +44,16 @@ TEST_CASE("json_writer", "replaces each ill-formed UTF-8 sequence with one \\uff
     CHECK_EQ(json_escape("\"\xE9\n"), std::string{"\\\"\\ufffd\\n"});
 }
 
+TEST_CASE("json_writer", "utf8_sanitized replaces ill-formed sequences with a raw U+FFFD") {
+    using tombstone::utf8_sanitized;
+    // A body 0.9.4 stored with a Latin-1 byte inside a JSON string.
+    CHECK_EQ(utf8_sanitized(R"({"stackHint":"Acc)" "\xE8" R"(s"})"),
+             std::string{R"({"stackHint":"Acc)" "\xEF\xBF\xBD" R"(s"})"});
+    CHECK_EQ(utf8_sanitized("ab\xE2\x82"), std::string{"ab\xEF\xBF\xBD"});  // one per subpart
+    CHECK_EQ(utf8_sanitized("caf\xC3\xA9 \xE6\xBC\xA2"), std::string{"caf\xC3\xA9 \xE6\xBC\xA2"});
+    CHECK_EQ(utf8_sanitized(R"({"a":"\\u00e9"})"), std::string{R"({"a":"\\u00e9"})"});  // ASCII kept
+}
+
 TEST_CASE("json_writer", "builds flat objects in call order") {
     JsonWriter json;
     json.begin_object();
