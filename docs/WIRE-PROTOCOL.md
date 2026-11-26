@@ -158,3 +158,10 @@ isolated so their rejection cannot discard valid neighbours.
 file content is the raw ingest body above, no wrapper. Drained on the next
 `tombstone_init`, or by `tools/uploader/upload.mjs` pointed at the `crashes`
 subdirectory.
+
+`<data_dir>/pending/{events-batch,metrics-batch}/<ms-epoch>-<8hex>.json` hold
+whole `{sentAtIso, items}` envelopes that could not be delivered (after the last
+in-session retry, or still queued at shutdown). The SDK replays each unchanged —
+original `sentAtIso` included, which the server never moves for a replay — to
+`events:batch` / `metrics:batch` at a later launch. `pending/events` (single
+events) is only drained, for files an older SDK left there.

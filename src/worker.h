@@ -46,7 +46,7 @@ struct UploadJob {
     std::filesystem::path sidecar_path;  // non-empty when backed by a pending file
     bool request_log{false};             // body carries "log":true -> chase the presign on 2xx
     bool log_from_previous{false};       // a granted presign uploads previous-session.log
-    bool no_persist{false};              // batch envelopes: retry in-session, never sidecar'd
+    bool no_persist{false};              // control-plane POSTs: retry in-session, never sidecar'd
     bool parse_ack{false};               // heartbeat: hand the 2xx body to the ack handler
     bool sign_body{false};               // ingest POST: attach the X-Tombstack-Signature header (S3)
     bool suppress_rtt{false};            // metrics:batch: do NOT emit an rtt metric (would recurse)

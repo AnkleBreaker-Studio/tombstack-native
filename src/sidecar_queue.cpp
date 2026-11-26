@@ -44,7 +44,7 @@ void SidecarQueue::configure(const fs::path &data_dir) {
     pending_dir_ = data_dir / "pending";
     try {
         for (const SidecarKind kind :
-             {SidecarKind::crash, SidecarKind::bug_report, SidecarKind::event}) {
+             kAllSidecarKinds) {
             fs::create_directories(pending_dir_ / kind_dir_name(kind));
         }
         configured_ = true;
@@ -59,6 +59,10 @@ const char *SidecarQueue::kind_dir_name(SidecarKind kind) noexcept {
         return "crashes";
     case SidecarKind::bug_report:
         return "bug-reports";
+    case SidecarKind::event_batch:
+        return "events-batch";
+    case SidecarKind::metric_batch:
+        return "metrics-batch";
     case SidecarKind::event:
     default:
         return "events";
@@ -126,7 +130,7 @@ std::size_t SidecarQueue::pending_count() {
     }
     std::size_t total = 0;
     for (const SidecarKind kind :
-         {SidecarKind::crash, SidecarKind::bug_report, SidecarKind::event}) {
+         kAllSidecarKinds) {
         total += count_files(kind_dir(kind));
     }
     return total;
@@ -138,7 +142,7 @@ void SidecarQueue::clear() {
         return;
     }
     for (const SidecarKind kind :
-         {SidecarKind::crash, SidecarKind::bug_report, SidecarKind::event}) {
+         kAllSidecarKinds) {
         try {
             std::vector<fs::path> files;
             std::error_code ec;
@@ -163,7 +167,7 @@ std::vector<SidecarRecord> SidecarQueue::scan() {
         return out;
     }
     for (const SidecarKind kind :
-         {SidecarKind::crash, SidecarKind::bug_report, SidecarKind::event}) {
+         kAllSidecarKinds) {
         try {
             std::error_code ec;
             for (const auto &entry : fs::directory_iterator{kind_dir(kind), ec}) {

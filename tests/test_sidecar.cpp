@@ -50,6 +50,26 @@ TEST_CASE("sidecar", "kinds map to their endpoint directories") {
              std::string{"bug-reports"});
     CHECK_EQ(std::string{SidecarQueue::kind_dir_name(SidecarKind::event)},
              std::string{"events"});
+    CHECK_EQ(std::string{SidecarQueue::kind_dir_name(SidecarKind::event_batch)},
+             std::string{"events-batch"});
+    CHECK_EQ(std::string{SidecarQueue::kind_dir_name(SidecarKind::metric_batch)},
+             std::string{"metrics-batch"});
+}
+
+TEST_CASE("sidecar", "batch envelopes are kept, scanned and cleared like reports") {
+    ttest::TempDir dir;
+    SdkLog log;
+    SidecarQueue queue{log};
+    queue.configure(dir.path());
+    queue.write(SidecarKind::event_batch, R"({"sentAtIso":"t","items":[{"name":"e"}]})");
+    queue.write(SidecarKind::metric_batch, R"({"sentAtIso":"t","items":[{"name":"m"}]})");
+    CHECK(fs::is_directory(dir.path() / "pending" / "events-batch"));
+    CHECK(fs::is_directory(dir.path() / "pending" / "metrics-batch"));
+    const auto records = queue.scan();
+    CHECK_EQ(records.size(), std::size_t{2});
+    CHECK_EQ(queue.pending_count(), std::size_t{2});
+    queue.clear();
+    CHECK_EQ(queue.pending_count(), std::size_t{0});
 }
 
 TEST_CASE("sidecar", "scan returns every pending record with its body and kind") {

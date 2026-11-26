@@ -369,8 +369,10 @@ TOMBSTONE_API tombstone_result tombstone_add_breadcrumb(tombstone_level level, c
  * Track a named analytics event with optional flat string attributes
  * (parallel keys[]/values[] arrays of length `count`; both may be NULL when
  * count is 0). Clamped to the wire contract: 32 attributes, 64-char keys,
- * 512-char values, 64-char name. Retried with backoff; persisted offline on
- * final failure.
+ * 512-char values, 64-char name. Batched, retried with backoff, and persisted
+ * offline after the final failure or at shutdown (pending/events-batch, and
+ * pending/metrics-batch for tombstone_track_metric), then sent at a later
+ * launch.
  */
 TOMBSTONE_API tombstone_result tombstone_track_event(const char *name,
                                                      const char *const *keys,

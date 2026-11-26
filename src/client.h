@@ -143,11 +143,12 @@ private:
     void record_rtt_metric(double ms);
 
     // --- batching (client.cpp): event/metric envelopes, sent off the worker thread ---
-    /** Drain one batch into the queue when a trigger fires (or `force`). `suppress_rtt`
-     *  marks the metrics batch so its own upload does not emit a recursive rtt metric. */
+    /** Drain one batch into the queue when a trigger fires (or `force`). `kind` is the
+     *  sidecar kind an undelivered envelope is persisted under; the metrics batch's own
+     *  upload never emits a (recursive) rtt metric. */
     void maybe_flush_batch(Batch &batch, const char *path,
                            std::chrono::steady_clock::time_point now, bool force,
-                           bool suppress_rtt);
+                           SidecarKind kind);
     /** Worker-thread hook: flush count/age-ready event + metric batches. */
     void drain_ready_batches();
     /** Force-drain both batches (explicit flush / quit / pre-crash). */

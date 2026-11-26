@@ -101,9 +101,12 @@ See [docs/INTEGRATION.md](docs/INTEGRATION.md) for per-engine notes and
 ## Offline story: sidecars + uploader
 
 Crash and bug payloads are **write-ahead**: persisted to
-`<data_dir>/pending/{crashes,bug-reports,events}/*.json` *before* the first
-upload attempt. Each file is the raw ingest body — no envelope — which makes
-the queue compatible with the standalone uploader from the Tombstack monorepo:
+`<data_dir>/pending/{crashes,bug-reports}/*.json` *before* the first
+upload attempt. Event and metric batches that cannot be delivered (offline, or
+still queued at quit) are kept too, whole, under `pending/events-batch` and
+`pending/metrics-batch`, and sent at a later launch. Each crash or bug file is
+the raw ingest body — no envelope — which makes the queue compatible with the
+standalone uploader from the Tombstack monorepo:
 
 ```bash
 TOMBSTONE_BASE_URL=https://host TOMBSTONE_TOKEN=tmb_... \

@@ -368,8 +368,9 @@ void Worker::retry_or_give_up(UploadJob &job, long retry_after_seconds, bool ret
     }
     // Final in-session failure: make sure durable payloads survive to the next
     // launch (write-ahead jobs already have a backing file). Batch envelopes are
-    // not single-item sidecars (the uploader posts those to the non-batch
-    // endpoint), so they are dropped fail-soft instead of mis-persisted.
+    // persisted whole under their own kinds (events-batch / metrics-batch) and
+    // replayed to the batch endpoints; time-sensitive control-plane jobs carry
+    // no_persist and are dropped.
     if (!job.is_log_upload && !job.no_persist && job.sidecar_path.empty() &&
         job.durability != Durability::ephemeral) {
         sidecars_.write(job.kind, job.body);

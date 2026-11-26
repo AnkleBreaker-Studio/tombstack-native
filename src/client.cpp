@@ -72,6 +72,10 @@ const char *ingest_path_for(SidecarKind kind) noexcept {
         return crashes_path;
     case SidecarKind::bug_report:
         return bug_reports_path;
+    case SidecarKind::event_batch:
+        return events_batch_path;
+    case SidecarKind::metric_batch:
+        return metrics_batch_path;
     case SidecarKind::event:
     default:
         return events_path;
@@ -316,10 +320,12 @@ void Client::drain_sidecars() {
         job.durability = Durability::write_ahead;
         job.kind = record.kind;
         job.sidecar_path = record.path;
-        job.request_log = (record.kind != SidecarKind::event) &&
-                          find_bool_field(job.body, "log").value_or(false);
+        const bool report =
+            record.kind == SidecarKind::crash || record.kind == SidecarKind::bug_report;
+        job.request_log = report && find_bool_field(job.body, "log").value_or(false);
         job.log_from_previous = true;
-        job.sign_body = true;  // restored crash/bug/event sidecars are ingest POSTs (S3)
+        job.sign_body = true;  // restored sidecars are all ingest POSTs (S3)
+        job.suppress_rtt = record.kind == SidecarKind::metric_batch;
         job.consent_epoch = epoch;
         worker_->enqueue(std::move(job));
     }
@@ -904,7 +910,7 @@ tombstone_result Client::flush(int timeout_ms) {
 
 void Client::maybe_flush_batch(Batch &batch, const char *path,
                                std::chrono::steady_clock::time_point now, bool force,
-                               bool suppress_rtt) {
+                               SidecarKind kind) {
     if (!batch.has_items()) {
         return;  // cheap short-circuit: an empty idle loop allocates nothing (section 15)
     }
@@ -920,10 +926,15 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
         UploadJob job;
         job.url = endpoint_ + path;
         job.body = std::move(envelope);
-        job.durability = Durability::persist_on_failure;  // retried with backoff in-session
-        job.no_persist = true;  // a batch envelope is not a single-item sidecar
+        // Retried with backoff in-session, then — after the final failure or at
+        // shutdown — persisted whole under its own kind and replayed unchanged to
+        // the batch endpoint at a later launch (the server accepts a replayed
+        // envelope with its original sentAtIso).
+        job.durability = Durability::persist_on_failure;
+        job.kind = kind;
         job.sign_body = true;  // events:batch / metrics:batch are ingest POSTs — sign them (S3)
-        job.suppress_rtt = suppress_rtt;  // the metrics batch's own upload must not emit an rtt metric
+        // the metrics batch's own upload must not emit an rtt metric (it would recurse)
+        job.suppress_rtt = kind == SidecarKind::metric_batch;
         job.consent_epoch = epoch;
         // Record the flush time for diagnostics (K3); steady-clock ns, 0 means "never".
         last_flush_steady_ns_.store(
@@ -937,8 +948,9 @@ void Client::drain_ready_batches() {
         return;  // v0.7 send gate: drains held until start_session (items keep buffering)
     }
     const auto now = std::chrono::steady_clock::now();
-    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/false, /*suppress_rtt=*/false);
-    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/false, /*suppress_rtt=*/true);
+    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/false, SidecarKind::event_batch);
+    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/false,
+                      SidecarKind::metric_batch);
 }
 
 void Client::flush_all_batches() {
@@ -949,8 +961,9 @@ void Client::flush_all_batches() {
         return;
     }
     const auto now = std::chrono::steady_clock::now();
-    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/true, /*suppress_rtt=*/false);
-    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/true, /*suppress_rtt=*/true);
+    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/true, SidecarKind::event_batch);
+    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/true,
+                      SidecarKind::metric_batch);
 }
 
 }  // namespace tombstone
