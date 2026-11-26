@@ -128,6 +128,9 @@ tombstone_result Client::add_breadcrumb(tombstone_level level, const char *messa
         return TOMBSTONE_DISABLED;
     }
     record_breadcrumb(level_label(level), message);
+    if (!capture_allowed()) {
+        breadcrumbs_.clear();  // consent was revoked while this breadcrumb was being captured
+    }
     return TOMBSTONE_OK;
 }
 
@@ -144,6 +147,14 @@ tombstone_result Client::log_line(tombstone_level level, const char *line) {
     }
     // Every mirrored line is also a breadcrumb (the crash-trail source).
     record_breadcrumb(label, line);
+    if (!capture_allowed()) {
+        // Consent was revoked while this line was being captured: the revoke's purge may
+        // already have run, so drop what this call added.
+        breadcrumbs_.clear();
+        if (session_log_enabled_ && storage_available_) {
+            session_log_.clear();
+        }
+    }
     return TOMBSTONE_OK;
 }
 

@@ -65,9 +65,13 @@ void SessionLog::append(std::string_view ts_iso, std::string_view level,
 }
 
 void SessionLog::flush_now() {
+    // The file lock spans the take and the write (lock order: file_mutex_ ->
+    // pending_mutex_, as in clear()), so a clear() can never fall between them and
+    // let lines taken before it land in the file it just emptied.
+    const std::lock_guard<std::mutex> lock(file_mutex_);
     const std::string chunk = take_pending();
     if (!chunk.empty()) {
-        write_chunk(chunk);
+        write_chunk_locked(chunk);
     }
 }
 
@@ -83,12 +87,12 @@ std::vector<char> SessionLog::read_previous() {
 }
 
 void SessionLog::clear() {
+    const std::lock_guard<std::mutex> lock(file_mutex_);
     {
-        const std::lock_guard<std::mutex> lock(pending_mutex_);
+        const std::lock_guard<std::mutex> pending_lock(pending_mutex_);
         pending_.clear();
         dropped_lines_ = 0;
     }
-    const std::lock_guard<std::mutex> lock(file_mutex_);
     if (!configured_) {
         return;
     }
@@ -117,8 +121,7 @@ std::string SessionLog::take_pending() {
     return chunk;
 }
 
-void SessionLog::write_chunk(const std::string &chunk) {
-    const std::lock_guard<std::mutex> lock(file_mutex_);
+void SessionLog::write_chunk_locked(const std::string &chunk) {
     if (!configured_) {
         return;
     }

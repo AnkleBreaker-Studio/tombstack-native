@@ -59,7 +59,8 @@ public:
 
 private:
     std::string take_pending();
-    void write_chunk(const std::string &chunk);
+    /** Append `chunk` to the file; the caller holds file_mutex_. */
+    void write_chunk_locked(const std::string &chunk);
     void trim_from_front();
     std::vector<char> read_file(const std::filesystem::path &path);
 
