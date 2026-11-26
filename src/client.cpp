@@ -153,16 +153,12 @@ tombstone_result Client::init(const tombstone_options &options) {
     configure_storage((options.data_dir != nullptr && options.data_dir[0] != '\0')
                           ? fs::path{options.data_dir}
                           : default_data_root() / storage_owner::game_dir_name(token_));
-    // v0.9: install the native crash handler once storage is ready (dump fd +
-    // module table). Opt-in + fail-soft: unsupported platforms / setup failure
-    // just leave native_crash_enabled_ behavior to the unclean-shutdown
-    // heuristic. Must run AFTER the previous dump was picked up (above).
-    if (native_crash_enabled_ && storage_available_) {
-        native_crash::install(data_dir_, sdk_log_);
+    // The device identity is read and stored, and the native crash handler armed,
+    // only once consent is granted: now when it already is (before the pre-init
+    // replay, which stamps that identity), else at tombstone_set_consent(1).
+    if (consent_) {
+        prepare_consented_capture();
     }
-    // v0.8: acquire the device-derived provisional user id BEFORE anything can
-    // send (worker/heartbeats start below), so no payload ever ships anonymous.
-    acquire_device_identity();
 
     transport_ = std::make_unique<Transport>(sdk_log_);
     worker_ = std::make_unique<Worker>(*transport_, sidecars_, session_log_, sdk_log_, token_);
@@ -319,6 +315,36 @@ void Client::drain_sidecars() {
     }
 }
 
+void Client::prepare_consented_capture() {
+    // v0.8: acquire the device-derived provisional user id BEFORE capture opens,
+    // so no payload ever ships anonymous.
+    if (!identity_acquired_) {
+        acquire_device_identity();
+        identity_acquired_ = true;
+    }
+    // v0.9: install (or re-arm) the native crash handler once storage is ready
+    // (dump fd + module table). Opt-in + fail-soft: unsupported platforms / setup
+    // failure leave the unclean-shutdown heuristic. Runs after the previous run's
+    // dump was picked up (configure_storage), since installing truncates it.
+    if (native_crash_enabled_ && storage_available_) {
+        native_crash::install(data_dir_, sdk_log_);
+    }
+}
+
+void Client::forget_device_identity() {
+    {
+        const std::lock_guard<std::mutex> lock(user_mutex_);
+        provisional_user_id_.clear();
+        pending_prior_user_id_.clear();
+        prior_in_flight_.clear();
+    }
+    if (storage_available_) {
+        std::error_code ec;
+        fs::remove(data_dir_ / identity_file_name, ec);
+    }
+    identity_acquired_ = false;  // a re-grant derives and stores it again
+}
+
 void Client::on_consent_granted() {
     if (!sidecars_drained_) {
         sidecars_drained_ = true;
@@ -339,6 +365,8 @@ void Client::purge_for_revoked_consent() {
     metric_batch_.clear();
     breadcrumbs_.clear();
     (void)frame_stats_.consume();
+    forget_device_identity();
+    native_crash::set_capture_enabled(false);  // the handler still chains, but writes no dump
     if (storage_available_) {
         sidecars_.clear();  // this session's pending reports and earlier sessions' alike
         if (session_log_enabled_) {
@@ -662,10 +690,18 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
 
 tombstone_result Client::set_consent(bool granted) {
     const std::lock_guard<std::mutex> lock(consent_mutex_);
-    const bool was_granted = consent_.exchange(granted);
-    if (granted && initialized_) {
-        on_consent_granted();
-    } else if (!granted && was_granted && initialized_) {
+    if (granted) {
+        if (initialized_) {
+            prepare_consented_capture();  // identity first: capture opens on the next line
+        }
+        consent_.store(true);
+        if (initialized_) {
+            on_consent_granted();
+        }
+        return TOMBSTONE_OK;
+    }
+    const bool was_granted = consent_.exchange(false);
+    if (was_granted && initialized_) {
         purge_for_revoked_consent();
     }
     return TOMBSTONE_OK;

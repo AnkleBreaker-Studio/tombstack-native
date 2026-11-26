@@ -60,10 +60,11 @@ hostname)` sets fleet labels. `tombstone_set_environment("staging")` tags every 
 `tombstone_set_device(&specs)` attaches hardware specs (the SDK never probes — you hand it what
 your engine already knows) to crashes, bug reports, and the session's first heartbeat.
 
-Identity: the SDK **never sends an anonymous user** (v0.8). At init it acquires a persistent
-device-derived provisional id (`dev_` + 16 hex — the machine id hashed with FNV-1a-64, salted with
-your ingest token, so the raw machine id never goes on the wire and the same machine gets a
-different id per game; persisted to `<data_dir>/identity`). Every payload carries it until you call
+Identity: the SDK **never sends an anonymous user** (v0.8). Once consent is granted (at init by
+default) it acquires a persistent device-derived provisional id (`dev_` + 16 hex — the machine id
+hashed with FNV-1a-64, salted with your ingest token, so the raw machine id never goes on the wire
+and the same machine gets a different id per game; persisted to `<data_dir>/identity`, deleted
+when consent is withdrawn). Every payload carries it until you call
 `tombstone_set_user(real_id)`, which upgrades the **same session**: the provisional id rides once
 as `priorUserId` (heartbeats until acked; crash/bug reports while pending) so the server merges the
 pre-login telemetry under the real player. `tombstone_set_user(NULL, NULL)` (logout) reverts to the

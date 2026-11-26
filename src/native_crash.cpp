@@ -138,6 +138,12 @@ HandlerState g_state;
 // not a CAS — two threads faulting at once could both pass and corrupt the single dump fd).
 std::atomic_flag g_in_handler = ATOMIC_FLAG_INIT;
 
+// Consent gate for dump writing (set_capture_enabled). Read in the handler: a lock-free atomic
+// load is async-signal-safe.
+std::atomic<bool> g_capture_enabled{false};
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "the crash handler reads this flag; it must be lock-free");
+
 // Fixed alternate signal stack (glibc 2.34+ made SIGSTKSZ a runtime value that
 // can't size an array): 64 KiB is comfortably above SIGSTKSZ on every target.
 char g_alt_stack[65536];
@@ -345,7 +351,7 @@ extern "C" void tombstone_signal_handler(int sig, siginfo_t *info, void *ucontex
         return;
     }
 
-    const int fd = g_state.dump_fd;
+    const int fd = g_capture_enabled.load(std::memory_order_relaxed) ? g_state.dump_fd : -1;
     if (fd >= 0) {
         write_str(fd, "tombstone-native-crash 1\n");
         write_str(fd, "signal ");
@@ -375,8 +381,15 @@ extern "C" void tombstone_signal_handler(int sig, siginfo_t *info, void *ucontex
 
 }  // namespace
 
+void set_capture_enabled(bool enabled) noexcept {
+    g_capture_enabled.store(enabled, std::memory_order_relaxed);
+}
+
 bool install(const std::filesystem::path &data_dir, SdkLog &sdk_log) {
-    if (g_state.installed) return true;
+    if (g_state.installed) {
+        set_capture_enabled(true);
+        return true;
+    }
 
     // 1) Pre-open the dump fd (truncating): the handler only write()s to it.
     const std::filesystem::path dump_path = data_dir / kDumpFileName;
@@ -418,6 +431,7 @@ bool install(const std::filesystem::path &data_dir, SdkLog &sdk_log) {
         return false;
     }
     g_state.installed = true;
+    set_capture_enabled(true);
     sdk_log.info("native crash handler installed (experimental)");
     return true;
 }
@@ -428,6 +442,8 @@ bool install(const std::filesystem::path & /*data_dir*/, SdkLog &sdk_log) {
     sdk_log.info("native crash handler not supported on this platform (using heuristic)");
     return false;
 }
+
+void set_capture_enabled(bool /*enabled*/) noexcept {}
 
 #endif  // TOMBSTONE_NATIVE_CRASH_POSIX
 

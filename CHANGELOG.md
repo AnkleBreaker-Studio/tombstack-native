@@ -21,6 +21,10 @@ the `tombstone` library name are stable — Tombstack is the product name).
   buffered and queued data kept being sent after the withdrawal.
 - With consent off at init, reports left pending by earlier sessions now wait on disk until
   consent is granted. Before, they were sent at init.
+- With consent off, the SDK no longer reads the machine identifier, stores the device-derived
+  player identifier or installs the native crash handler: this now happens once consent is
+  granted. Withdrawing consent deletes the stored identifier and stops crash dumps from being
+  written.
 - A `tombstone_set_consent(0)` made before `tombstone_init` now applies from the start of init.
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place

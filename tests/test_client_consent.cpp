@@ -102,6 +102,25 @@ TEST_CASE("client_consent", "with consent off at init, earlier reports wait unse
     CHECK_EQ(count_bodies("/ingest/crashes", "sig-earlier"), std::size_t{1});
 }
 
+TEST_CASE("client_consent", "the device identity is read and stored only once consent is granted") {
+    ttest::TempDir dir;
+    fake_transport::reset();
+    const fs::path identity = dir.path() / "identity";
+    const SdkSession session{kToken, dir.path().string(),
+                             [](tombstone_options &options) { options.consent_granted = 0; }};
+    CHECK(session.ok());
+    CHECK(!fs::exists(identity));  // nothing stored on the device while consent is pending
+
+    CHECK(tombstone_set_consent(1) == TOMBSTONE_OK);
+    CHECK(fs::exists(identity));
+    CHECK(tombstone_report_crash("sig-identity", "h", nullptr, 0) == TOMBSTONE_OK);
+    CHECK(tombstone_flush(5000) == TOMBSTONE_OK);
+    CHECK_EQ(count_bodies("/ingest/crashes", R"("userId":"dev_)"), std::size_t{1});  // never anonymous
+
+    CHECK(tombstone_set_consent(0) == TOMBSTONE_OK);
+    CHECK(!fs::exists(identity));  // withdrawn: the stored identifier is deleted
+}
+
 TEST_CASE("client_consent", "an operator log pull is not player data and is not held") {
     ttest::TempDir dir;
     fake_transport::reset();

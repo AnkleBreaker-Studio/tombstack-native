@@ -65,12 +65,20 @@ inline constexpr const char *kDumpFileName = "native-crash.dump";
 std::optional<NativeCrashDump> take_previous(const std::filesystem::path &data_dir, SdkLog &sdk_log);
 
 /**
- * Install the signal handlers (SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE/SIGTRAP).
- * Call once, from a normal context, AFTER take_previous (the dump file is
- * truncated here). Returns false on unsupported platforms or setup failure —
- * never throws into game code.
+ * Install the signal handlers (SIGSEGV/SIGABRT/SIGBUS/SIGILL/SIGFPE/SIGTRAP)
+ * and enable dump writing. Call from a normal context, AFTER take_previous (the
+ * dump file is truncated on the first call); later calls only re-enable dump
+ * writing. Returns false on unsupported platforms or setup failure — never
+ * throws into game code.
  */
 bool install(const std::filesystem::path &data_dir, SdkLog &sdk_log);
+
+/**
+ * Enable or disable dump writing (consent). While disabled, an installed
+ * handler writes nothing but still chains to the previous handler exactly as
+ * before. A no-op where capture is unsupported. Safe from any thread.
+ */
+void set_capture_enabled(bool enabled) noexcept;
 
 /** Pure, host-testable: parse the dump text (tolerates a truncated tail —
  *  a crash mid-write must still yield the facts written so far). */

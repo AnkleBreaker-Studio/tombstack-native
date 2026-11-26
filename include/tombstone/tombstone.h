@@ -124,7 +124,9 @@ typedef struct tombstone_options {
     int enable_session_log;
     /** Nonzero (default) = detect a hard-killed previous session and report it. */
     int enable_unclean_shutdown_detection;
-    /** Nonzero (default) = capture starts immediately. 0 = wait for tombstone_set_consent(1). */
+    /** Nonzero (default) = capture starts immediately. 0 = wait for tombstone_set_consent(1):
+     *  until then nothing is captured or sent, the device identity is neither
+     *  read nor stored, and the native crash handler is not installed. */
     int consent_granted;
     /** Nonzero (default) = the SDK begins SENDING immediately at init (today's
      *  behavior). 0 = defer the first heartbeat and all event/metric batch
@@ -175,11 +177,11 @@ TOMBSTONE_API tombstone_result tombstone_shutdown(void);
  * Attribute subsequent payloads to a player. Values are clamped to the wire
  * contract (user_id 128, steam_id 32 chars).
  *
- * Device identity (v0.8): the SDK never sends an anonymous user. At init it
- * acquires a persistent device-derived provisional id ("dev_" + 16 lowercase
- * hex — the machine id hashed salted with the game token; the raw machine id
- * never goes on the wire), and every payload carries it until you set a real
- * id. The first tombstone_set_user(real_id) after init upgrades the SAME
+ * Device identity (v0.8): the SDK never sends an anonymous user. Once consent
+ * is granted (at init by default) it acquires a persistent device-derived
+ * provisional id ("dev_" + 16 lowercase hex — the machine id hashed salted with
+ * the game token; the raw machine id never goes on the wire), and every payload
+ * carries it until you set a real id. Revoking consent deletes the stored id. The first tombstone_set_user(real_id) after init upgrades the SAME
  * session: the provisional id rides heartbeats (and crash/bug bodies) once as
  * `priorUserId` until a heartbeat is acked, so the server merges the session's
  * pre-login telemetry under the real player. Passing NULL/empty (logout)

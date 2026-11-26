@@ -106,6 +106,12 @@ private:
     /** Best-effort write of `<data_dir>/identity` (a failure is logged only). */
     void persist_identity(const std::string &id);
     void drain_sidecars();
+    /** Before capture opens under consent: acquire the device identity (read the
+     *  machine id, derive, store) and arm the native crash handler. Nothing of the
+     *  kind happens while consent is off. Caller holds consent_mutex_ or is init. */
+    void prepare_consented_capture();
+    /** Consent revoked: delete the stored device identity and forget it in memory. */
+    void forget_device_identity();
     /** Consent is (now) granted: send what earlier sessions left pending (once per
      *  launch) and start dirty-session tracking. Caller holds consent_mutex_ or is
      *  still single-threaded (init). */
@@ -226,6 +232,7 @@ private:
     // consent_mutex_ -> heartbeat_mutex_ -> the worker's queue mutex.
     std::mutex consent_mutex_;
     bool sidecars_drained_{false};  // earlier sessions' pending files sent (guarded by consent_mutex_)
+    bool identity_acquired_{false};  // device identity read + stored (guarded by consent_mutex_)
     std::mutex session_tracking_mutex_;
     bool session_tracking_started_{false};
     std::optional<SessionMarkerData> previous_marker_;
