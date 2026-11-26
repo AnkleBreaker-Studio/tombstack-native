@@ -8,7 +8,14 @@
 
 namespace tombstone {
 
-/** Standard JSON string escaping (quotes, backslash, control chars as \uXXXX). */
+/**
+ * Standard JSON string escaping (quotes, backslash, control chars as \uXXXX).
+ * The result is always well-formed UTF-8: each ill-formed sequence in `value`
+ * (a lone legacy code-page byte, a truncated or overlong sequence, a surrogate)
+ * becomes one `�`, by the same maximal-subpart rule a UTF-8 decoder uses.
+ * The server decodes the body before verifying the signature over it, so a body
+ * that is not valid UTF-8 could never be verified.
+ */
 std::string json_escape(std::string_view value);
 
 /**

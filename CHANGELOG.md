@@ -3,6 +3,15 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
+## [Unreleased]
+
+### Fixed
+
+- Crash and bug reports whose text holds bytes that are not valid UTF-8 (a Windows path or a
+  system error message in a local code page, in the stack hint, a log line or a breadcrumb) were
+  refused by the server and then deleted. Each invalid sequence is now sent as the Unicode
+  replacement character, so these reports arrive.
+
 ## [0.9.4] - 2026-09-18
 
 - Fix a copied range-loop variable in the new batch tests. GCC/Clang treat it as an error under the SDK's warnings-as-errors policy, so the default Linux/macOS build of 0.9.3 failed even though Windows compiled. Runtime transport behaviour is unchanged from 0.9.3.

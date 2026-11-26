@@ -101,6 +101,25 @@ TEST_CASE("payloads", "crash clamps oversized strings to the schema maxima") {
     CHECK(json.find(std::string(8193, 't')) == std::string::npos);
 }
 
+TEST_CASE("payloads", "crash body stays well-formed UTF-8 when inputs carry legacy code-page bytes") {
+    // A Windows ANSI path in the hint and a Latin-1 log line in the breadcrumb trail: the body the
+    // SDK signs must be the exact bytes the server's UTF-8 decode reproduces.
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.signature = "sig";
+    payload.stack_hint = "Access violation in C:\\Users\\J\xE9r\xF4me\\game.dll";
+    payload.breadcrumbs = {Breadcrumb{"2026-01-02T03:04:00.000Z", "Error", "Acc\xE8s refus\xE9"}};
+    const std::string json = build_crash_json(payload);
+    CHECK(json.find("J\\ufffdr\\ufffdme") != std::string::npos);
+    CHECK(json.find("Acc\\ufffds refus\\ufffd") != std::string::npos);
+    for (const char c : json) {
+        CHECK(static_cast<unsigned char>(c) < 0x80U);  // every input byte above was ill-formed
+    }
+}
+
 TEST_CASE("payloads", "bug report is byte exact and omits empty category") {
     BugReportPayload payload;
     payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
