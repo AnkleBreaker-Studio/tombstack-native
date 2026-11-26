@@ -28,9 +28,13 @@ public:
     InstanceLock(InstanceLock &&) = delete;
     InstanceLock &operator=(InstanceLock &&) = delete;
 
-    /** Try once, without waiting. True when this process now owns `dir`. */
+    /** Try once, without waiting. False only when another process holds the lock.
+     *  True when this process now holds it — and also when the directory cannot be
+     *  locked at all (a filesystem without lock support): nothing else can hold it
+     *  either, so this process behaves as the only one, as before locking existed. */
     bool try_acquire(const std::filesystem::path &dir) noexcept;
 
+    /** True while an operating-system lock is actually held. */
     bool held() const noexcept { return held_; }
 
     /** Release now (also done by the destructor and by the OS at exit). */

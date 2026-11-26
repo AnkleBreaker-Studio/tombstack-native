@@ -15,9 +15,11 @@ TEST_CASE("instance_lock", "only one holder at a time, and the lock frees on rel
     CHECK(second.try_acquire(dir.path()));  // the next one to start takes over
 }
 
-TEST_CASE("instance_lock", "an unusable directory is simply not owned") {
+TEST_CASE("instance_lock", "a directory that cannot be locked does not make a process a non-owner") {
+    // Locking unavailable (here: no such directory; elsewhere: a filesystem without lock
+    // support) must not cost a lone process its session tracking: it owns, with no OS lock.
     ttest::TempDir dir;
     InstanceLock lock;
-    CHECK(!lock.try_acquire(dir.path() / "missing" / "nested"));
+    CHECK(lock.try_acquire(dir.path() / "missing" / "nested"));
     CHECK(!lock.held());
 }

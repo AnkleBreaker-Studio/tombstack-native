@@ -6,6 +6,7 @@
 #endif
 #include <windows.h>
 #else
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -31,19 +32,20 @@ bool InstanceLock::try_acquire(const std::filesystem::path &dir) noexcept {
                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                     nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (handle == INVALID_HANDLE_VALUE) {
-            return false;
+            return true;  // cannot lock here at all: behave as the only process
         }
         OVERLAPPED region = {};
         if (LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0,
                        &region) == 0) {
+            const DWORD error = GetLastError();
             CloseHandle(handle);
-            return false;
+            return error != ERROR_LOCK_VIOLATION;  // only a lock held elsewhere contests it
         }
         handle_ = handle;
         held_ = true;
         return true;
     } catch (...) {
-        return false;
+        return true;
     }
 }
 
@@ -65,17 +67,23 @@ bool InstanceLock::try_acquire(const std::filesystem::path &dir) noexcept {
         const std::filesystem::path path = dir / kLockFileName;
         const int fd = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
         if (fd < 0) {
-            return false;
+            return true;  // cannot lock here at all: behave as the only process
         }
         if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            const int error = errno;
             close(fd);
-            return false;
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
+            const bool contested = error == EWOULDBLOCK || error == EAGAIN;
+#else
+            const bool contested = error == EAGAIN;
+#endif
+            return !contested;  // only a lock held elsewhere contests it (not ENOLCK...)
         }
         fd_ = fd;
         held_ = true;
         return true;
     } catch (...) {
-        return false;
+        return true;
     }
 }
 
