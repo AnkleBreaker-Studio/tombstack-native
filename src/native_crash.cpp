@@ -11,8 +11,9 @@
 
 #include "sdk_log.h"
 
-#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -684,13 +685,11 @@ std::optional<NativeCrashDump> take_previous(const std::filesystem::path &data_d
     if (!std::filesystem::exists(dump_path, ec)) return std::nullopt;
     std::optional<NativeCrashDump> result;
     try {
-        std::FILE *f = std::fopen(dump_path.string().c_str(), "rb");
-        if (f != nullptr) {
-            std::string text;
-            char buf[4096];
-            std::size_t n;
-            while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
-            std::fclose(f);
+        // Opened through the path itself (wide on Windows), never a narrowed copy.
+        std::ifstream in{dump_path, std::ios::binary};
+        if (in) {
+            const std::string text{std::istreambuf_iterator<char>{in},
+                                   std::istreambuf_iterator<char>{}};
             result = parse_dump(text);
         }
     } catch (const std::exception &e) {

@@ -150,8 +150,10 @@ tombstone_result Client::init(const tombstone_options &options) {
     // Storage belongs to one game: the default is a directory of this game's own,
     // and a directory another game's token already owns is never shared
     // (storage_owner.h). Nothing an older SDK left in the shared base is read.
+    // data_dir is UTF-8 (u8path): a plain narrow path is read in the ANSI code page on
+    // Windows, which garbles any non-ASCII folder name.
     configure_storage((options.data_dir != nullptr && options.data_dir[0] != '\0')
-                          ? fs::path{options.data_dir}
+                          ? fs::u8path(options.data_dir)
                           : default_data_root() / storage_owner::game_dir_name(token_));
     // The device identity is read and stored, and the native crash handler armed,
     // only once consent is granted: now when it already is (before the pre-init

@@ -29,6 +29,11 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- On Windows, a player whose user folder name is outside the system's ANSI code page (for
+  example a Chinese name on a Western-language system), or a `data_dir` with non-ASCII
+  characters, left the SDK without any storage: no offline queue, no unclean-shutdown
+  detection and no session log. Paths are now read as Unicode, and `data_dir` is taken as
+  UTF-8 on every platform.
 - Crash reports from the native crash handler now carry their precise grouping key, so crashes
   at different places in the same library and build appear as separate issues instead of one.
 - A device number outside the server's range in `tombstone_set_device` (RAM in KB instead of

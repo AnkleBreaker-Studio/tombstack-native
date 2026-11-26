@@ -116,6 +116,62 @@ TEST_CASE("client_storage", "a data_dir another game already uses is not shared 
     CHECK_EQ(count_files(shared.path() / "pending" / "crashes"), std::size_t{0});
 }
 
+TEST_CASE("client_storage", "a non-ASCII UTF-8 data_dir is used as given") {
+    ttest::TempDir root;
+    const fs::path expected = root.path() / fs::u8path(u8"Tombstack-测试-é");
+    fake_transport::reset();
+    fake_transport::Response offline;
+    offline.transport_error = true;
+    fake_transport::set_default(offline);  // the report stays pending, so it can be found on disk
+    {
+        const SdkSession session{kTokenA, expected.u8string()};
+        CHECK(session.ok());
+        CHECK(tombstone_report_crash("sig-utf8", "h", nullptr, 0) == TOMBSTONE_OK);
+    }
+    CHECK_EQ(count_files(expected / "pending" / "crashes"), std::size_t{1});
+}
+
+#if defined(_WIN32)
+namespace {
+/** Sets a Windows environment variable through the wide CRT API for the scope. */
+class ScopedWideEnv {
+public:
+    ScopedWideEnv(const wchar_t *name, const std::wstring &value) : name_(name) {
+        const wchar_t *previous = _wgetenv(name);
+        had_previous_ = previous != nullptr;
+        previous_ = had_previous_ ? previous : L"";
+        _wputenv_s(name, value.c_str());
+    }
+    ~ScopedWideEnv() { _wputenv_s(name_.c_str(), had_previous_ ? previous_.c_str() : L""); }
+    ScopedWideEnv(const ScopedWideEnv &) = delete;
+    ScopedWideEnv &operator=(const ScopedWideEnv &) = delete;
+
+private:
+    std::wstring name_;
+    std::wstring previous_;
+    bool had_previous_{false};
+};
+}  // namespace
+
+TEST_CASE("client_storage", "a LOCALAPPDATA outside the ANSI code page still holds the storage") {
+    ttest::TempDir home;
+    const fs::path local = home.path() / fs::u8path(u8"Profil-测试");
+    fs::create_directories(local);
+    const ScopedWideEnv env{L"LOCALAPPDATA", local.wstring()};
+    fake_transport::reset();
+    fake_transport::Response offline;
+    offline.transport_error = true;
+    fake_transport::set_default(offline);
+    {
+        const SdkSession session{kTokenA};
+        CHECK(session.ok());
+        CHECK(tombstone_report_crash("sig-wide", "h", nullptr, 0) == TOMBSTONE_OK);
+    }
+    const fs::path dir = local / "Tombstone" / so::game_dir_name(kTokenA);
+    CHECK_EQ(count_files(dir / "pending" / "crashes"), std::size_t{1});
+}
+#endif
+
 TEST_CASE("client_storage", "a directory from before ownership existed is claimed by its game") {
     ttest::TempDir legacy;
     // A game that already passed its own data_dir to an older SDK keeps its pending reports.

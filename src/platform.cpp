@@ -43,19 +43,38 @@ const char *arch_name() noexcept {
 
 namespace {
 
+#if defined(_WIN32)
+/** An environment variable as a path, read with the wide API: getenv() converts
+ *  to the ANSI code page, which turns a user profile name outside it into '?'
+ *  and leaves an unusable directory. Empty when unset. */
+std::filesystem::path wide_env_path(const wchar_t *name) {
+    const DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
+    if (needed == 0) {
+        return {};
+    }
+    std::wstring value(needed, L'\0');
+    const DWORD written = GetEnvironmentVariableW(name, value.data(), needed);
+    if (written == 0 || written >= needed) {
+        return {};
+    }
+    value.resize(written);
+    return std::filesystem::path{value};
+}
+#else
 /** getenv as a string; empty when unset (read-only env access, never freed). */
 std::string env_or_empty(const char *name) {
     const char *value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
     return value != nullptr ? std::string{value} : std::string{};
 }
+#endif
 
 }  // namespace
 
 std::filesystem::path default_data_root() {
 #if defined(_WIN32)
-    const std::string base = env_or_empty("LOCALAPPDATA");
+    const std::filesystem::path base = wide_env_path(L"LOCALAPPDATA");
     if (!base.empty()) {
-        return std::filesystem::path{base} / "Tombstone";
+        return base / "Tombstone";
     }
 #elif defined(__APPLE__)
     const std::string home = env_or_empty("HOME");
