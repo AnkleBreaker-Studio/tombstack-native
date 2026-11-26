@@ -82,6 +82,26 @@ std::vector<char> SessionLog::read_previous() {
     return read_file(previous_path_);
 }
 
+void SessionLog::clear() {
+    {
+        const std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_.clear();
+        dropped_lines_ = 0;
+    }
+    const std::lock_guard<std::mutex> lock(file_mutex_);
+    if (!configured_) {
+        return;
+    }
+    try {
+        std::error_code ec;
+        fs::remove(previous_path_, ec);
+        std::ofstream truncate{current_path_, std::ios::binary | std::ios::trunc};
+        file_bytes_ = 0;
+    } catch (const std::exception &e) {
+        sdk_log_.warn(std::string{"session log clear failed: "} + e.what());
+    }
+}
+
 std::string SessionLog::take_pending() {
     const std::lock_guard<std::mutex> lock(pending_mutex_);
     if (pending_.empty()) {

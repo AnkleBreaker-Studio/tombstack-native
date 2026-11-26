@@ -55,6 +55,33 @@ TEST_CASE("session_log", "rotation preserves the previous run and resets the cur
     CHECK_EQ(std::string(bytes.begin(), bytes.end()), previous);
 }
 
+TEST_CASE("session_log", "clear drops buffered, current and previous lines") {
+    ttest::TempDir dir;
+    SdkLog sdk_log;
+    {
+        SessionLog first{sdk_log};
+        first.configure(dir.path());
+        first.rotate_for_new_session();
+        first.append("t1", "Info", "from run one");
+        first.flush_now();
+    }
+    SessionLog log{sdk_log};
+    log.configure(dir.path());
+    CHECK(log.rotate_for_new_session());
+    log.append("t2", "Info", "flushed before the clear");
+    log.flush_now();
+    log.append("t3", "Info", "still buffered at the clear");
+
+    log.clear();
+    CHECK(!fs::exists(dir.path() / "previous-session.log"));
+    CHECK(log.read_previous().empty());
+    CHECK(log.read_current().empty());
+
+    log.append("t4", "Info", "after the clear");  // the log keeps working
+    const auto bytes = log.read_current();
+    CHECK_EQ(std::string(bytes.begin(), bytes.end()), std::string{"t4 [Info] after the clear\n"});
+}
+
 TEST_CASE("session_log", "stale previous logs are replaced on rotation") {
     ttest::TempDir dir;
     SdkLog sdk_log;

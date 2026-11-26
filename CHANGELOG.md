@@ -14,6 +14,13 @@ the `tombstone` library name are stable — Tombstack is the product name).
   either: the SDK uses its own subfolder inside it. Files earlier versions left in the shared
   folder are not read or sent. The player identifier is derived again for the new folder and
   stays the same on the same machine; a game that changes its SDK token starts new ones.
+- Withdrawing consent (`tombstone_set_consent(0)`) now discards everything captured but not yet
+  delivered: queued and pending crash and bug reports (earlier sessions' included), buffered
+  events and metrics, breadcrumbs, the session logs and the unclean-shutdown marker. Nothing
+  captured before the withdrawal is sent afterwards, even if consent is granted again. Before,
+  buffered and queued data kept being sent after the withdrawal.
+- With consent off at init, reports left pending by earlier sessions now wait on disk until
+  consent is granted. Before, they were sent at init.
 - A device whose clock is more than five minutes off lost everything it sent: the server refused
   the request and the SDK deleted the crash or bug report. The SDK now takes the server's time from
   every response and uses it when signing, retrying at once with the corrected time, so these

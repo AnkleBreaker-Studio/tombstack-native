@@ -128,6 +128,32 @@ std::size_t Worker::queued_count() const {
     return queue_.size();
 }
 
+std::uint64_t Worker::consent_epoch() const noexcept { return consent_epoch_.load(); }
+
+void Worker::revoke_consent() {
+    std::deque<UploadJob> dropped;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        consent_epoch_.fetch_add(1);
+        for (auto it = queue_.begin(); it != queue_.end();) {
+            if (it->consent_gated) {
+                dropped.push_back(std::move(*it));
+                it = queue_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const UploadJob &job : dropped) {
+        sidecars_.remove(job.sidecar_path);
+    }
+    cv_.notify_all();  // flush() waiters see the emptied queue
+}
+
+bool Worker::captured_before_revoke(const UploadJob &job) const noexcept {
+    return job.consent_gated && job.consent_epoch != consent_epoch_.load();
+}
+
 void Worker::run() {
     for (;;) {
         if (batch_drainer_) {
@@ -212,6 +238,10 @@ std::chrono::steady_clock::time_point Worker::next_wakeup() const {
 
 void Worker::process(UploadJob &job) {
     try {
+        if (captured_before_revoke(job)) {
+            sidecars_.remove(job.sidecar_path);  // consent was revoked after it was captured
+            return;
+        }
         if (job.is_log_upload) {
             const HttpResponse response =
                 job.form_fields.empty()
@@ -260,6 +290,12 @@ void Worker::process(UploadJob &job) {
 }
 
 void Worker::handle_post_result(UploadJob &job, const HttpResponse &response, bool clock_moved) {
+    if (captured_before_revoke(job)) {
+        // Consent was revoked while this was in flight: no retry, no persistence,
+        // no follow-up log upload, whatever the outcome.
+        sidecars_.remove(job.sidecar_path);
+        return;
+    }
     const Unauthorized unauthorized = unauthorized_kind(job, response);
     switch (classify(response.transport_error, response.status, unauthorized)) {
     case Outcome::delivered:
@@ -311,6 +347,8 @@ void Worker::schedule_log_upload(const UploadJob &job, const std::string &respon
     put.form_fields = upload->fields;
     put.raw = std::move(bytes);
     put.durability = Durability::persist_on_failure;  // retried, never persisted
+    put.consent_gated = job.consent_gated;            // the log is the report's: same consent
+    put.consent_epoch = job.consent_epoch;
     enqueue(std::move(put));
 }
 
@@ -341,6 +379,10 @@ void Worker::persist_leftovers() {
         leftovers.swap(queue_);
     }
     for (const UploadJob &job : leftovers) {
+        if (captured_before_revoke(job)) {
+            sidecars_.remove(job.sidecar_path);
+            continue;
+        }
         if (!job.is_log_upload && !job.no_persist && job.sidecar_path.empty() &&
             job.durability != Durability::ephemeral) {
             sidecars_.write(job.kind, job.body);

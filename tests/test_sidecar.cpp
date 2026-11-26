@@ -97,6 +97,22 @@ TEST_CASE("sidecar", "remove deletes the backing file") {
     CHECK(queue.scan().empty());
 }
 
+TEST_CASE("sidecar", "clear deletes every pending payload of every kind") {
+    ttest::TempDir dir;
+    SdkLog log;
+    SidecarQueue queue{log};
+    queue.configure(dir.path());
+
+    queue.write(SidecarKind::crash, crash_body);
+    queue.write(SidecarKind::bug_report, R"({"message":"m"})");
+    queue.write(SidecarKind::event, R"({"name":"e"})");
+    CHECK_EQ(queue.pending_count(), std::size_t{3});
+    queue.clear();
+    CHECK_EQ(queue.pending_count(), std::size_t{0});
+    CHECK(queue.scan().empty());
+    CHECK(!queue.write(SidecarKind::crash, crash_body).empty());  // still usable afterwards
+}
+
 TEST_CASE("sidecar", "per kind capacity is enforced") {
     ttest::TempDir dir;
     SdkLog log;

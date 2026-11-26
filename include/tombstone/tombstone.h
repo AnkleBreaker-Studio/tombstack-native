@@ -209,6 +209,12 @@ TOMBSTONE_API tombstone_result tombstone_set_user_metadata(const char *const *ke
 /**
  * Toggle capture + upload (store policy / GDPR). While 0, nothing is recorded
  * or sent — breadcrumbs, heartbeats, events, and reports are all ignored.
+ * Revoking (1 -> 0) also discards everything captured but not yet delivered:
+ * queued and pending crash and bug reports (earlier sessions' included),
+ * buffered events and metrics, the breadcrumb trail, the session logs and the
+ * unclean-shutdown marker; nothing captured before the revoke is sent, even
+ * after a later re-grant. With consent off at init, reports left pending by
+ * earlier sessions stay on disk, unsent, until consent is granted.
  */
 TOMBSTONE_API tombstone_result tombstone_set_consent(int granted);
 

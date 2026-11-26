@@ -132,6 +132,30 @@ std::size_t SidecarQueue::pending_count() {
     return total;
 }
 
+void SidecarQueue::clear() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!configured_) {
+        return;
+    }
+    for (const SidecarKind kind :
+         {SidecarKind::crash, SidecarKind::bug_report, SidecarKind::event}) {
+        try {
+            std::vector<fs::path> files;
+            std::error_code ec;
+            for (const auto &entry : fs::directory_iterator{kind_dir(kind), ec}) {
+                if (entry.is_regular_file(ec)) {
+                    files.push_back(entry.path());
+                }
+            }
+            for (const fs::path &file : files) {
+                fs::remove(file, ec);
+            }
+        } catch (const std::exception &e) {
+            sdk_log_.warn(std::string{"could not delete pending payloads: "} + e.what());
+        }
+    }
+}
+
 std::vector<SidecarRecord> SidecarQueue::scan() {
     const std::lock_guard<std::mutex> lock(mutex_);
     std::vector<SidecarRecord> out;

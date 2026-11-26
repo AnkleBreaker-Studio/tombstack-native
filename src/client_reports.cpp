@@ -102,7 +102,8 @@ void Client::record_breadcrumb(std::string_view level, std::string_view message)
 }
 
 void Client::enqueue_ingest(const char *path, std::string body, Durability durability,
-                            SidecarKind kind, bool request_log, bool log_from_previous) {
+                            SidecarKind kind, bool request_log, bool log_from_previous,
+                            std::uint64_t consent_epoch) {
     UploadJob job;
     job.url = endpoint_ + path;
     job.body = std::move(body);
@@ -111,6 +112,7 @@ void Client::enqueue_ingest(const char *path, std::string body, Durability durab
     job.request_log = request_log;
     job.log_from_previous = log_from_previous;
     job.sign_body = true;  // crashes/bug-reports/events are ingest POSTs — sign them (S3)
+    job.consent_epoch = consent_epoch;
     if (durability == Durability::write_ahead && storage_available_) {
         // Persisted BEFORE the first attempt so a quit/crash cannot lose it.
         job.sidecar_path = sidecars_.write(kind, job.body);
@@ -184,6 +186,9 @@ tombstone_result Client::track_event(const char *name, const char *const *keys,
     if (event_batch_.add(build_event_json(payload))) {
         worker_->wake();
     }
+    if (!capture_allowed()) {
+        event_batch_.clear();  // consent was revoked while this event was being captured
+    }
     return TOMBSTONE_OK;
 }
 
@@ -220,11 +225,15 @@ tombstone_result Client::track_metric(const char *name, double value, const char
     if (metric_batch_.add(build_metric_json(payload))) {
         worker_->wake();
     }
+    if (!capture_allowed()) {
+        metric_batch_.clear();  // consent was revoked while this metric was being captured
+    }
     return TOMBSTONE_OK;
 }
 
 tombstone_result Client::report_crash(const char *signature, const char *stack_hint,
                                       const char *stack_trace, bool attach_log) {
+    const std::uint64_t epoch = capture_epoch();
     if (!capture_allowed()) {
         return TOMBSTONE_DISABLED;
     }
@@ -279,7 +288,7 @@ tombstone_result Client::report_crash(const char *signature, const char *stack_h
     // crash the final batch must still be delivered, not lost in memory.
     flush_all_batches();
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
-                   SidecarKind::crash, want_log, /*log_from_previous=*/false);
+                   SidecarKind::crash, want_log, /*log_from_previous=*/false, epoch);
     // Final flush in the crash path: the on-disk log must include this crash
     // even if the process dies before the upload (the write-ahead sidecar
     // retries next launch).
@@ -305,6 +314,7 @@ tombstone_result Client::request_player_logs(const char *target_type, const char
     job.body = build_pull_request_json(target_type, target_value, reason);
     job.durability = Durability::persist_on_failure;  // retried in-session with backoff
     job.no_persist = true;  // a control-plane POST is not a single-item ingest sidecar
+    job.consent_gated = false;  // an operator's request, carrying no data from this device
     worker_->enqueue(std::move(job));
     return TOMBSTONE_OK;
 }
@@ -366,6 +376,7 @@ tombstone_result Client::report_bug(const char *category, const char *message, b
     if (message == nullptr || message[0] == '\0') {
         return TOMBSTONE_ERROR_INVALID_ARGUMENT;
     }
+    const std::uint64_t epoch = capture_epoch();
     if (!capture_allowed()) {
         return TOMBSTONE_DISABLED;
     }
@@ -391,7 +402,7 @@ tombstone_result Client::report_bug(const char *category, const char *message, b
     payload.environment = bug_ctx.environment;
     payload.device = current_device();  // hardware specs for the player-profile Hardware view
     enqueue_ingest(bug_reports_path, build_bug_report_json(payload), Durability::write_ahead,
-                   SidecarKind::bug_report, want_log, /*log_from_previous=*/false);
+                   SidecarKind::bug_report, want_log, /*log_from_previous=*/false, epoch);
     return TOMBSTONE_OK;
 }
 

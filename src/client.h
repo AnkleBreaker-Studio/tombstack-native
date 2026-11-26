@@ -101,9 +101,18 @@ private:
     /** Best-effort write of `<data_dir>/identity` (a failure is logged only). */
     void persist_identity(const std::string &id);
     void drain_sidecars();
+    /** Consent is (now) granted: send what earlier sessions left pending (once per
+     *  launch) and start dirty-session tracking. Caller holds consent_mutex_ or is
+     *  still single-threaded (init). */
+    void on_consent_granted();
+    /** Consent revoked: discard everything captured but not yet delivered — queued
+     *  and pending reports, buffered events and metrics, breadcrumbs, frame stats,
+     *  session logs and the session marker. Caller holds consent_mutex_. */
+    void purge_for_revoked_consent();
     void start_session_tracking();
     void report_unclean_shutdown(const SessionMarkerData &previous);
-    void report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump);
+    void report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump,
+                             std::uint64_t consent_epoch);
     void heartbeat_loop();
     void stop_heartbeat();
     /** Worker-thread hook: parse a heartbeat ack and fulfil pull requests
@@ -112,9 +121,13 @@ private:
 
     // --- capture helpers (client_reports.cpp) ---
     bool capture_allowed() const noexcept { return initialized_ && consent_; }
+    /** The consent epoch to stamp on a payload. Read it BEFORE the consent check:
+     *  a revoke racing the capture then always invalidates the payload. */
+    std::uint64_t capture_epoch() const noexcept { return worker_ ? worker_->consent_epoch() : 0; }
     void record_breadcrumb(std::string_view level, std::string_view message);
     void enqueue_ingest(const char *path, std::string body, Durability durability,
-                        SidecarKind kind, bool request_log, bool log_from_previous);
+                        SidecarKind kind, bool request_log, bool log_from_previous,
+                        std::uint64_t consent_epoch);
     /** Worker-thread hook (K1): record the upload round-trip as `tombstone.rtt_ms`. */
     void record_rtt_metric(double ms);
 
@@ -204,6 +217,10 @@ private:
     // options.auto_start_session at init; start_session() sets it forever.
     // Latch semantics live (and are unit-tested) in start_gate.h.
     StartGate start_gate_;
+    // Serializes consent transitions (grant / revoke sequences). Lock order:
+    // consent_mutex_ -> heartbeat_mutex_ -> the worker's queue mutex.
+    std::mutex consent_mutex_;
+    bool sidecars_drained_{false};  // earlier sessions' pending files sent (guarded by consent_mutex_)
     std::mutex session_tracking_mutex_;
     bool session_tracking_started_{false};
     std::optional<SessionMarkerData> previous_marker_;

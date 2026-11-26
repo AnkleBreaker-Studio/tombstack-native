@@ -103,7 +103,11 @@ official Tombstack Unity SDK instead — it has deeper engine hooks.
 
 If your platform requires opt-in telemetry, init with `consent_granted = 0`
 and call `tombstone_set_consent(1)` after the player accepts. While consent
-is off nothing is recorded or sent — calls return `TOMBSTONE_DISABLED`.
+is off nothing is recorded or sent — calls return `TOMBSTONE_DISABLED` — and
+reports left pending by earlier sessions wait on disk, unsent. When the player
+withdraws consent, `tombstone_set_consent(0)` discards everything not yet
+delivered (pending reports, buffered events and metrics, breadcrumbs, session
+logs); none of it is sent after a later re-grant.
 
 ## Shipping checklist
 

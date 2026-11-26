@@ -58,6 +58,9 @@ public:
     /** All pending sidecars across the three kinds (offline drain at init). */
     std::vector<SidecarRecord> scan();
 
+    /** Delete every pending payload of every kind (consent revoked). Best-effort. */
+    void clear();
+
     /** Count of pending sidecar files across the three kinds (diagnostics, K3). */
     std::size_t pending_count();
 

@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -49,6 +50,11 @@ struct UploadJob {
     bool parse_ack{false};               // heartbeat: hand the 2xx body to the ack handler
     bool sign_body{false};               // ingest POST: attach the X-Tombstack-Signature header (S3)
     bool suppress_rtt{false};            // metrics:batch: do NOT emit an rtt metric (would recurse)
+    /** Player data, governed by consent (everything except operator control-plane POSTs). */
+    bool consent_gated{true};
+    /** Worker::consent_epoch() read before the capture's consent check; a gated job from an
+     *  older epoch was captured before a revoke and is dropped instead of sent. */
+    std::uint64_t consent_epoch{0};
     int attempt{0};
     std::chrono::steady_clock::time_point not_before{};
 };
@@ -123,6 +129,17 @@ public:
     /** Number of jobs waiting in the outbound queue (diagnostics, K3). Thread-safe. */
     std::size_t queued_count() const;
 
+    /** Consent epoch, incremented by every revoke_consent(). Thread-safe. */
+    std::uint64_t consent_epoch() const noexcept;
+
+    /**
+     * Consent revoked: bump the epoch and drop every queued consent-gated job,
+     * deleting its sidecar file. A gated job captured before this call is then
+     * dropped wherever it is — queued, in flight (no retry, no follow-up upload),
+     * or enqueued later. Control-plane jobs (consent_gated = false) are kept.
+     */
+    void revoke_consent();
+
 private:
     void run();
     bool take_ready_job(UploadJob &out);
@@ -138,6 +155,8 @@ private:
      *  `retry_now` skips the wait (the cause of the failure was just fixed). */
     void retry_or_give_up(UploadJob &job, long retry_after_seconds = -1, bool retry_now = false);
     void persist_leftovers();
+    /** A gated job captured before the latest consent revoke. */
+    bool captured_before_revoke(const UploadJob &job) const noexcept;
 
     Transport &transport_;
     SidecarQueue &sidecars_;
@@ -153,6 +172,7 @@ private:
     bool in_flight_{false};
     std::atomic<bool> previous_log_claimed_{false};
     std::atomic<bool> wake_requested_{false};
+    std::atomic<std::uint64_t> consent_epoch_{0};
     std::function<void()> batch_drainer_;  // set before start(); read on the worker thread
     std::function<void(const std::string &)> ack_handler_;  // set before start(); worker thread
     std::function<void(double)> rtt_handler_;  // set before start(); worker thread (K1)

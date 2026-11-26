@@ -52,6 +52,11 @@ public:
     /** Preserved previous-session log bytes. Empty when unavailable. */
     std::vector<char> read_previous();
 
+    /** Consent revoked: drop the buffered lines, empty `session.log` and delete
+     *  `previous-session.log`, so no line written before the revoke can ever be
+     *  uploaded. Later lines (after a re-grant) append as usual. */
+    void clear();
+
 private:
     std::string take_pending();
     void write_chunk(const std::string &chunk);

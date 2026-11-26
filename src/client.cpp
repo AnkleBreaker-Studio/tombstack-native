@@ -174,13 +174,14 @@ tombstone_result Client::init(const tombstone_options &options) {
     worker_->start();
 
     initialized_ = true;
-    drain_sidecars();
 
     if (heartbeats_enabled_) {
         heartbeat_thread_ = std::thread{[this] { heartbeat_loop(); }};
     }
     if (consent_) {
-        start_session_tracking();
+        // Without consent, what earlier sessions left pending stays on disk, unsent,
+        // until tombstone_set_consent(1).
+        on_consent_granted();
     }
     return TOMBSTONE_OK;
 }
@@ -292,6 +293,7 @@ void Client::persist_identity(const std::string &id) {
  * a previous session: a granted log presign must upload that run's preserved
  * log, never this session's fresh one. */
 void Client::drain_sidecars() {
+    const std::uint64_t epoch = capture_epoch();
     for (SidecarRecord &record : sidecars_.scan()) {
         if (record.kind == SidecarKind::crash) {
             has_restored_crash_ = true;
@@ -306,8 +308,45 @@ void Client::drain_sidecars() {
                           find_bool_field(job.body, "log").value_or(false);
         job.log_from_previous = true;
         job.sign_body = true;  // restored crash/bug/event sidecars are ingest POSTs (S3)
+        job.consent_epoch = epoch;
         worker_->enqueue(std::move(job));
     }
+}
+
+void Client::on_consent_granted() {
+    if (!sidecars_drained_) {
+        sidecars_drained_ = true;
+        drain_sidecars();
+    }
+    start_session_tracking();
+}
+
+void Client::purge_for_revoked_consent() {
+    // Nothing captured before the revoke may leave the device, now or after a later
+    // re-grant. The heartbeat lock makes a beat being built right now land in the
+    // queue before the purge empties it.
+    {
+        const std::lock_guard<std::mutex> heartbeat_lock(heartbeat_mutex_);
+        worker_->revoke_consent();
+    }
+    event_batch_.clear();
+    metric_batch_.clear();
+    breadcrumbs_.clear();
+    (void)frame_stats_.consume();
+    if (storage_available_) {
+        sidecars_.clear();  // this session's pending reports and earlier sessions' alike
+        if (session_log_enabled_) {
+            session_log_.clear();
+        }
+        marker_.remove();
+    }
+    {
+        const std::lock_guard<std::mutex> lock(session_tracking_mutex_);
+        session_tracking_started_ = false;  // a re-grant starts tracking afresh
+        previous_marker_.reset();
+    }
+    previous_native_dump_.reset();
+    had_previous_log_ = false;
 }
 
 /**
@@ -338,6 +377,10 @@ void Client::start_session_tracking() {
  * Only when no crash survived do we send this synthetic report.
  */
 void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
+    const std::uint64_t epoch = capture_epoch();
+    if (!capture_allowed()) {
+        return;
+    }
     if (has_restored_crash_) {
         // A managed crash sidecar survived — richer than anything we can
         // synthesize; consume any native dump so it can't double-report.
@@ -350,7 +393,7 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
     if (previous_native_dump_.has_value()) {
         const NativeCrashDump dump = *previous_native_dump_;
         previous_native_dump_.reset();
-        report_native_crash(previous, dump);
+        report_native_crash(previous, dump, epoch);
         return;
     }
     CrashPayload payload;
@@ -367,7 +410,7 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
     // This launch's crumbs belong to this session, not the dead one.
     payload.log = session_log_enabled_ && had_previous_log_;
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
-                   SidecarKind::crash, payload.log, /*log_from_previous=*/true);
+                   SidecarKind::crash, payload.log, /*log_from_previous=*/true, epoch);
 }
 
 /**
@@ -379,7 +422,8 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
  * signature). A SIGABRT is classified "signal" (a managed abort/assert path)
  * vs. the memory-access signals as "native_crash".
  */
-void Client::report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump) {
+void Client::report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump,
+                                 std::uint64_t consent_epoch) {
     std::string frames_text;
     for (const NativeCrashFrame &f : dump.frames) {
         frames_text += f.module;
@@ -420,7 +464,7 @@ void Client::report_native_crash(const SessionMarkerData &previous, const Native
     payload.crash_type = (dump.signal_no == 6) ? "signal" : "native_crash";
     payload.os_signal = dump.signal_no;
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
-                   SidecarKind::crash, payload.log, /*log_from_previous=*/true);
+                   SidecarKind::crash, payload.log, /*log_from_previous=*/true, consent_epoch);
 }
 
 void Client::heartbeat_loop() {
@@ -430,6 +474,7 @@ void Client::heartbeat_loop() {
         // first heartbeat registers a provisional-identity "production" session
         // before the game has set identity/environment/metadata (v0.8: the
         // device-derived dev_ id, never anonymous).
+        const std::uint64_t epoch = capture_epoch();
         if (capture_allowed() && start_gate_.is_set()) {
             try {
                 HeartbeatPayload payload;
@@ -505,6 +550,7 @@ void Client::heartbeat_loop() {
                 job.durability = Durability::ephemeral;  // a missed beat is stale data
                 job.parse_ack = true;  // the 202 ack may carry pull requests for us
                 job.sign_body = true;  // heartbeats are an ingest POST — sign them (S3)
+                job.consent_epoch = epoch;
                 if (carrying_device) {
                     device_carry_in_flight_.store(true, std::memory_order_relaxed);
                 }
@@ -573,6 +619,7 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
             metadata_in_flight_json_.clear();
             metadata_in_flight_epoch_ = -1;
         }
+        const std::uint64_t epoch = capture_epoch();
         if (!capture_allowed() || response_body.empty()) {
             return;
         }
@@ -597,6 +644,7 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
             job.durability = Durability::persist_on_failure;  // retried in-session with backoff
             job.request_log = true;  // chase data.logUpload -> PUT the current session log
             job.no_persist = true;   // the presign is time-sensitive; never sidecar across launches
+            job.consent_epoch = epoch;
             worker_->enqueue(std::move(job));
         }
     } catch (const std::exception &e) {
@@ -607,13 +655,12 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
 }
 
 tombstone_result Client::set_consent(bool granted) {
+    const std::lock_guard<std::mutex> lock(consent_mutex_);
     const bool was_granted = consent_.exchange(granted);
     if (granted && initialized_) {
-        start_session_tracking();
-    } else if (!granted && was_granted) {
-        // Consent revoked: purge buffered breadcrumbs so the pre-revoke trail can't
-        // attach to a crash captured after consent is re-granted (GDPR scoping).
-        breadcrumbs_.clear();
+        on_consent_granted();
+    } else if (!granted && was_granted && initialized_) {
+        purge_for_revoked_consent();
     }
     return TOMBSTONE_OK;
 }
@@ -805,6 +852,10 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
     if (!batch.has_items()) {
         return;  // cheap short-circuit: an empty idle loop allocates nothing (section 15)
     }
+    const std::uint64_t epoch = capture_epoch();
+    if (!capture_allowed()) {
+        return;  // consent off: the batches were emptied by the revoke and must stay unsent
+    }
     auto envelopes = batch.drain_envelopes_if_ready(now_iso8601_utc_ms(), now, force);
     if (envelopes.empty()) {
         return;
@@ -817,6 +868,7 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
         job.no_persist = true;  // a batch envelope is not a single-item sidecar
         job.sign_body = true;  // events:batch / metrics:batch are ingest POSTs — sign them (S3)
         job.suppress_rtt = suppress_rtt;  // the metrics batch's own upload must not emit an rtt metric
+        job.consent_epoch = epoch;
         // Record the flush time for diagnostics (K3); steady-clock ns, 0 means "never".
         last_flush_steady_ns_.store(
             std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);

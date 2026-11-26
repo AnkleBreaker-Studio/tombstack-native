@@ -32,6 +32,17 @@ TEST_CASE("batch", "no trigger leaves the buffer intact") {
     CHECK(batch.has_items());
 }
 
+TEST_CASE("batch", "clear discards every buffered item") {
+    Batch batch;
+    batch.add(R"({"name":"a"})");
+    batch.add(R"({"name":"b"})");
+    batch.clear();
+    CHECK(!batch.has_items());
+    CHECK(batch.drain_envelopes_if_ready("2026-01-01T00:00:00.000Z",
+                                         std::chrono::steady_clock::now(), /*force=*/true)
+              .empty());
+}
+
 TEST_CASE("batch", "count trigger fires at flush_count") {
     Batch batch;
     bool triggered = false;
