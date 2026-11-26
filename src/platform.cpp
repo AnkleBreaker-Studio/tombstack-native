@@ -8,6 +8,7 @@
 #endif
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <ctime>
 #include <unistd.h>
 #include <uuid/uuid.h>
@@ -20,8 +21,18 @@ namespace tombstone {
 const char *os_name() noexcept {
 #if defined(_WIN32)
     return "windows";
+#elif defined(__ANDROID__)
+    return "android";  // checked before __linux__, which Android also defines
 #elif defined(__APPLE__)
+#if defined(TARGET_OS_MACCATALYST) && TARGET_OS_MACCATALYST
+    return "macos";  // an iPad app running on a Mac
+#elif defined(TARGET_OS_IOS) && TARGET_OS_IOS
+    return "ios";
+#elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    return "other";  // tvOS / watchOS / visionOS: not in the server's OS enum
+#else
     return "macos";
+#endif
 #elif defined(__linux__)
     return "linux";
 #else
@@ -60,7 +71,7 @@ std::filesystem::path wide_env_path(const wchar_t *name) {
     value.resize(written);
     return std::filesystem::path{value};
 }
-#else
+#elif !defined(__ANDROID__)
 /** getenv as a string; empty when unset (read-only env access, never freed). */
 std::string env_or_empty(const char *name) {
     const char *value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
@@ -71,6 +82,11 @@ std::string env_or_empty(const char *name) {
 }  // namespace
 
 std::filesystem::path default_data_root() {
+#if defined(__ANDROID__)
+    // No HOME or XDG directory an app can write to, and the working directory is
+    // "/": there is no usable default. The game must pass options.data_dir.
+    return {};
+#else
 #if defined(_WIN32)
     const std::filesystem::path base = wide_env_path(L"LOCALAPPDATA");
     if (!base.empty()) {
@@ -92,6 +108,7 @@ std::filesystem::path default_data_root() {
     }
 #endif
     return std::filesystem::path{"tombstone-data"};
+#endif
 }
 
 std::string read_machine_id() {

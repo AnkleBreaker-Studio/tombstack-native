@@ -152,9 +152,17 @@ tombstone_result Client::init(const tombstone_options &options) {
     // (storage_owner.h). Nothing an older SDK left in the shared base is read.
     // data_dir is UTF-8 (u8path): a plain narrow path is read in the ANSI code page on
     // Windows, which garbles any non-ASCII folder name.
-    configure_storage((options.data_dir != nullptr && options.data_dir[0] != '\0')
-                          ? fs::u8path(options.data_dir)
-                          : default_data_root() / storage_owner::game_dir_name(token_));
+    const bool has_data_dir = options.data_dir != nullptr && options.data_dir[0] != '\0';
+    const fs::path default_root = has_data_dir ? fs::path{} : default_data_root();
+    if (has_data_dir) {
+        configure_storage(fs::u8path(options.data_dir));
+    } else if (!default_root.empty()) {
+        configure_storage(default_root / storage_owner::game_dir_name(token_));
+    } else {
+        sdk_log_.error("options.data_dir is required on this platform (on Android, pass the "
+                       "app's files directory): running without offline persistence, "
+                       "unclean-shutdown detection or session log");
+    }
     // The device identity is read and stored, and the native crash handler armed,
     // only once consent is granted: now when it already is (before the pre-init
     // replay, which stamps that identity), else at tombstone_set_consent(1).

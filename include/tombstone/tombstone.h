@@ -108,7 +108,9 @@ typedef struct tombstone_options {
      *  (<base>/Tombstone/game-<16 hex>, derived from the token). A directory you
      *  pass must belong to this game alone: one already used by a game with a
      *  different token is never shared — the SDK then uses its own
-     *  game-<16 hex> subdirectory inside it. */
+     *  game-<16 hex> subdirectory inside it. Required on Android, which has no
+     *  writable default (pass the app's files directory): without it the SDK
+     *  runs with no offline queue, session log or unclean-shutdown detection. */
     const char *data_dir;
     /** Deployment environment stamped on every payload (e.g. "production",
      *  "staging", "dev"; clamped to 64). NULL/empty = unset (the server

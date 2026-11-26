@@ -29,6 +29,11 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- Android games are now reported as `android` and iOS games as `ios`, instead of `linux` and
+  `macos`, so the dashboard's OS filter shows them apart. On Android, where no default folder
+  is writable, the SDK now logs an error when `data_dir` is missing instead of silently running
+  without storage; the integration notes describe the Android `data_dir` and what to call when
+  a mobile app goes to the background.
 - On Windows, a player whose user folder name is outside the system's ANSI code page (for
   example a Chinese name on a Western-language system), or a `data_dir` with non-ASCII
   characters, left the SDK without any storage: no offline queue, no unclean-shutdown

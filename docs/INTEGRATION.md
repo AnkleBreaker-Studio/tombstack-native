@@ -94,6 +94,18 @@ that interval's fps average / slow-frame % / hitch count / worst frame.
 - Dedicated servers: disable the session log (`enable_session_log = 0`) if
   you already ship logs elsewhere; heartbeats give you live session counts.
 
+## Mobile (Android / iOS)
+
+- Reports are tagged `android` / `ios`, so the dashboard's OS filter shows them
+  apart from desktop Linux and macOS.
+- Android: pass `data_dir` — the app's files directory (`Context.getFilesDir()`,
+  or `SDL_AndroidGetInternalStoragePath()` / your engine's equivalent). Android
+  has no writable default; without it the SDK runs with no offline queue,
+  session log or unclean-shutdown detection, and logs an error saying so.
+- When the app goes to the background, call `tombstone_flush(timeout_ms)`: the
+  OS may end a backgrounded app without notice. Such an ending is reported at
+  the next launch as an unclean shutdown, as is any other kill.
+
 ## C# / other managed runtimes (non-Unity)
 
 ```csharp

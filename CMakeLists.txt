@@ -175,6 +175,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_json_writer.cpp
     tests/test_native_crash.cpp
     tests/test_payloads.cpp
+    tests/test_platform.cpp
     tests/test_preinit.cpp
     tests/test_retry_after.cpp
     tests/test_sampler.cpp
@@ -198,7 +199,7 @@ if(TOMBSTONE_BUILD_TESTS)
 
   foreach(suite
       batch breadcrumb_ring clock concurrency dedupe device_identity frame_stats header_contract
-      json_scan json_writer native_crash payloads preinit retry_after sampler server_clock
+      json_scan json_writer native_crash payloads platform preinit retry_after sampler server_clock
       session_log session_marker sidecar signature start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
   endforeach()

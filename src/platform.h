@@ -6,7 +6,8 @@
 
 namespace tombstone {
 
-/** Wire `os` enum value for this build: "windows" | "macos" | "linux" | "other". */
+/** Wire `os` enum value for this build: "windows" | "macos" | "linux" | "android" |
+ *  "ios" | "other" (the server's OS enum). */
 const char *os_name() noexcept;
 
 /** Wire `arch` enum value for this build: "x64" | "arm64" | "x86" | "other". */
@@ -17,9 +18,10 @@ const char *arch_name() noexcept;
  * own (`<base>/game-<storage key>`, see storage_owner.h): Windows
  * %LOCALAPPDATA%\Tombstone, macOS ~/Library/Application Support/Tombstone,
  * Linux $XDG_DATA_HOME/tombstone or ~/.local/share/tombstone; the relative
- * "tombstone-data" when no environment hint exists. Up to 0.9.4 this base was
- * itself the shared default data directory; what was left in it is not read.
- * May throw std::bad_alloc only.
+ * "tombstone-data" when no environment hint exists. Empty on Android, where no
+ * default is writable: the game must pass options.data_dir. Up to 0.9.4 this
+ * base was itself the shared default data directory; what was left in it is
+ * not read. May throw std::bad_alloc only.
  */
 std::filesystem::path default_data_root();
 
