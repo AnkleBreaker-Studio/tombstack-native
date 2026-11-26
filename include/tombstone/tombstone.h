@@ -320,7 +320,8 @@ TOMBSTONE_API void tombstone_end_match(tombstone_handle *h);
  * it does NOT probe hardware (your engine already knows its GPU/CPU/screen).
  * Zero the struct; every field is optional and NULL/0 means "unset" (unset
  * fields are omitted from the wire body). Strings are clamped to the wire
- * contract maxima noted per field.
+ * contract maxima noted per field. A number outside the range noted per field
+ * (a unit mistake: RAM in KB, refresh rate in mHz) is omitted.
  */
 typedef struct tombstone_device_t {
     const char *model;             /* <=256 device/hardware model name */
@@ -328,16 +329,16 @@ typedef struct tombstone_device_t {
     const char *os;                /* <=256 full OS string with version */
     const char *os_family;         /* <=48  e.g. "Windows", "Linux", "macOS" */
     const char *cpu;               /* <=256 CPU model string */
-    int cpu_count;                 /* logical core count; 0 = unset */
-    int ram_mb;                    /* system memory in MB; 0 = unset */
+    int cpu_count;                 /* logical core count, 1..4096; 0 = unset */
+    int ram_mb;                    /* system memory in MB, 1..4194304; 0 = unset */
     const char *gpu;               /* <=256 GPU device name */
     const char *gpu_vendor;        /* <=256 GPU vendor name */
     const char *gpu_version;       /* <=256 driver/API version string */
     const char *gpu_api;           /* <=64  e.g. "Direct3D12", "Vulkan", "Metal" */
-    int vram_mb;                   /* video memory in MB; 0 = unset */
+    int vram_mb;                   /* video memory in MB, 1..4194304; 0 = unset */
     const char *screen;            /* <=32  "WxH", e.g. "2560x1440" */
-    double screen_dpi;             /* dots per inch; 0 = unset */
-    double refresh_rate;           /* display Hz; 0 = unset */
+    double screen_dpi;             /* dots per inch, up to 10000; 0 = unset */
+    double refresh_rate;           /* display Hz, up to 1000; 0 = unset */
     const char *orientation;       /* <=32  e.g. "Landscape", "Portrait" */
     int fullscreen;                /* nonzero = fullscreen; 0 = unset/omitted */
     const char *language;          /* <=48  system/user language tag */

@@ -29,6 +29,10 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- A device number outside the server's range in `tombstone_set_device` (RAM in KB instead of
+  MB, a refresh rate in mHz, more than 4096 cores) made the server refuse every crash and bug
+  report from that build, which were then deleted. Such a number is now left out of the
+  report, which arrives. The accepted ranges are listed in the header.
 - The `tombstone.rtt_ms` self-metric (on by default) recorded one row per successful upload —
   every heartbeat and every event batch — and on the free plan these rows used up most of the
   per-session metric allowance, so the game's own events were refused. It is now sampled at
