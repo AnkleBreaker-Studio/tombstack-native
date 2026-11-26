@@ -122,17 +122,79 @@ TEST_CASE("native_crash", "build_crash_json serializes crashType + osSignal, omi
 }
 
 // --------------------------------------------------------------------------
+// After the previous handler returns: resolved faults resume, unresolved ones die.
+// Pure decision logic, so it runs on every platform.
+// --------------------------------------------------------------------------
+
+TEST_CASE("native_crash", "a fault a runtime redirected or fixed in place resumes") {
+    nc::ChainFacts redirected;  // Mono / CoreCLR moved the PC to a managed exception
+    redirected.signal_no = 11;
+    redirected.context_changed = true;
+    CHECK(nc::verdict_after_chain(redirected) == nc::ChainVerdict::resume);
+
+    nc::ChainFacts fixed;  // a GC unprotected the page and wants the store retried
+    fixed.signal_no = 11;
+    fixed.unchanged_repeats = 1;
+    CHECK(nc::verdict_after_chain(fixed) == nc::ChainVerdict::resume);
+
+    nc::ChainFacts divide;  // a managed DivideByZeroException
+    divide.signal_no = 8;
+    divide.context_changed = true;
+    CHECK(nc::verdict_after_chain(divide) == nc::ChainVerdict::resume);
+}
+
+TEST_CASE("native_crash", "an unresolved, aborting or re-registered fault does not resume") {
+    nc::ChainFacts looping;  // the same fault keeps coming back: nothing resolved it
+    looping.signal_no = 11;
+    looping.unchanged_repeats = nc::kMaxUnchangedRepeats;
+    CHECK(nc::verdict_after_chain(looping) == nc::ChainVerdict::die);
+
+    nc::ChainFacts aborted;  // abort() ends the process whatever the handler did
+    aborted.signal_no = 6;
+    aborted.context_changed = true;
+    CHECK(nc::verdict_after_chain(aborted) == nc::ChainVerdict::die);
+
+    nc::ChainFacts replaced;  // the previous handler installed SIG_DFL to die by it
+    replaced.signal_no = 11;
+    replaced.still_registered = false;
+    CHECK(nc::verdict_after_chain(replaced) == nc::ChainVerdict::defer);
+}
+
+TEST_CASE("native_crash", "repeat counting needs the same fault in quick succession") {
+    nc::RepeatTracker tracker;
+    const std::int64_t t0 = 5'000'000'000;
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x1000, 0x10, t0), 1U);
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x1000, 0x10, t0 + 1000), 2U);
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x1000, 0x10, t0 + 2000), 3U);
+    // Another faulting instruction, address or signal starts a new run.
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x2000, 0x10, t0 + 3000), 1U);
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x2000, 0x20, t0 + 4000), 1U);
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 7, 0x2000, 0x20, t0 + 5000), 1U);
+    // So does the same fault long after the last one (a page protected again later).
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 7, 0x2000, 0x20, t0 + 6000), 2U);
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 7, 0x2000, 0x20,
+                                      t0 + 6000 + nc::kRepeatWindowNs + 1),
+             1U);
+}
+
+// --------------------------------------------------------------------------
 // Live capture + CHAINING integration (Linux only — the platform where CI can
-// actually fault a child and inspect it). Proves, in one real SIGSEGV:
-//   1. our handler wrote a parseable dump,
-//   2. the PRE-EXISTING handler (Unity/UGS analog) still ran (chaining), and
-//   3. the process still died with the true signal.
+// actually fault a child and inspect it). Proves, with real faults:
+//   1. our handler writes a parseable dump and the PRE-EXISTING handler
+//      (Unity/UGS analog) still runs (chaining);
+//   2. a fault nothing resolves still kills the process with the true signal;
+//   3. a fault the previous handler resolves (moving the PC like a managed
+//      runtime, or fixing the page like a GC) is resumed and leaves no dump;
+//   4. an alternate signal stack registered before install is kept;
+//   5. with capture disabled (consent), no dump is written.
 // --------------------------------------------------------------------------
 #if defined(__linux__)
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 namespace {
@@ -141,8 +203,8 @@ namespace {
 volatile std::uintptr_t g_fault_addr = 0;
 const char *g_prev_sentinel = nullptr;
 void prev_handler(int /*sig*/, siginfo_t * /*info*/, void * /*uc*/) {
-    // Async-signal-safe: just create a sentinel file, then return so OUR
-    // handler's reraise-default path takes the process down.
+    // Async-signal-safe: just create a sentinel file, then return WITHOUT
+    // resolving the fault, so it recurs until OUR handler declares it fatal.
     if (g_prev_sentinel != nullptr) {
         const int fd = open(g_prev_sentinel, O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (fd >= 0) {
@@ -196,5 +258,136 @@ TEST_CASE("native_crash", "handler dumps AND chains to a pre-existing handler, d
     CHECK(dump.has_value());
     CHECK_EQ(dump->signal_no, SIGSEGV);
     CHECK(!dump->frames.empty());              // at least the PC frame captured
+}
+
+namespace {
+
+// A GC-style previous handler: resolves the fault in place (unprotects the page)
+// and returns, so the faulting store is retried and succeeds.
+void *g_guard_page = nullptr;
+std::size_t g_page_size = 0;
+void unprotect_handler(int /*sig*/, siginfo_t * /*info*/, void * /*uc*/) {
+    mprotect(g_guard_page, g_page_size, PROT_READ | PROT_WRITE);
+}
+
+#if defined(__x86_64__) || defined(__aarch64__)
+#if defined(__x86_64__)
+#define TOMBSTONE_TEST_REALIGN __attribute__((force_align_arg_pointer))
+#else
+#define TOMBSTONE_TEST_REALIGN
+#endif
+
+// A managed-runtime-style previous handler (Mono / CoreCLR): turns the fault into
+// an "exception" by moving the PC to recovery code, then returns.
+[[noreturn]] TOMBSTONE_TEST_REALIGN void recovered_from_fault() { _exit(0); }
+
+void redirect_handler(int /*sig*/, siginfo_t * /*info*/, void *ucontext) {
+    auto *uc = static_cast<ucontext_t *>(ucontext);
+    const auto target = reinterpret_cast<std::uintptr_t>(&recovered_from_fault);
+#if defined(__x86_64__)
+    uc->uc_mcontext.gregs[REG_RIP] = static_cast<greg_t>(target);
+#else
+    uc->uc_mcontext.pc = target;
+#endif
+}
+#endif
+
+void install_previous(int sig, void (*handler)(int, siginfo_t *, void *)) {
+    struct sigaction prev;
+    std::memset(&prev, 0, sizeof(prev));
+    prev.sa_sigaction = handler;
+    sigemptyset(&prev.sa_mask);
+    prev.sa_flags = SA_SIGINFO;
+    sigaction(sig, &prev, nullptr);
+}
+
+/** Run `child` in a forked child (it must _exit itself); returns the wait status. */
+template <typename Child>
+int run_in_child(Child child) {
+    const pid_t pid = fork();
+    if (pid == 0) {
+        child();
+        _exit(99);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return status;
+}
+
+}  // namespace
+
+TEST_CASE("native_crash", "a fault the previous handler fixes in place is resumed, not fatal") {
+    ttest::TempDir dir;
+    const fs::path base = dir.path();
+    const int status = run_in_child([&] {
+        g_page_size = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+        g_guard_page = mmap(nullptr, g_page_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (g_guard_page == MAP_FAILED) _exit(40);
+        install_previous(SIGSEGV, unprotect_handler);
+        SdkLog log;
+        if (!nc::install(base, log)) _exit(42);
+        volatile int *slot = static_cast<volatile int *>(g_guard_page);
+        *slot = 7;  // faults once; the previous handler unprotects the page; the store retries
+        _exit(*slot == 7 ? 0 : 41);
+    });
+    CHECK(WIFEXITED(status));
+    CHECK_EQ(WEXITSTATUS(status), 0);
+    SdkLog log;
+    CHECK(!nc::take_previous(base, log).has_value());  // the handled fault left no dump
+}
+
+#if defined(__x86_64__) || defined(__aarch64__)
+TEST_CASE("native_crash", "a fault a managed runtime turns into an exception does not kill") {
+    ttest::TempDir dir;
+    const fs::path base = dir.path();
+    const int status = run_in_child([&] {
+        install_previous(SIGSEGV, redirect_handler);
+        SdkLog log;
+        if (!nc::install(base, log)) _exit(42);
+        *reinterpret_cast<volatile int *>(g_fault_addr) = 5;  // a "NullReferenceException"
+        _exit(43);  // not reached: execution continues in recovered_from_fault()
+    });
+    CHECK(WIFEXITED(status));
+    CHECK_EQ(WEXITSTATUS(status), 0);
+    SdkLog log;
+    CHECK(!nc::take_previous(base, log).has_value());
+}
+#endif
+
+TEST_CASE("native_crash", "an alternate signal stack registered before install is kept") {
+    ttest::TempDir dir;
+    const fs::path base = dir.path();
+    const int status = run_in_child([&] {
+        static char engine_stack[64 * 1024];
+        stack_t mine;
+        std::memset(&mine, 0, sizeof(mine));
+        mine.ss_sp = engine_stack;
+        mine.ss_size = sizeof(engine_stack);
+        if (sigaltstack(&mine, nullptr) != 0) _exit(40);
+        SdkLog log;
+        if (!nc::install(base, log)) _exit(42);
+        stack_t now;
+        std::memset(&now, 0, sizeof(now));
+        sigaltstack(nullptr, &now);
+        _exit(now.ss_sp == static_cast<void *>(engine_stack) ? 0 : 1);
+    });
+    CHECK(WIFEXITED(status));
+    CHECK_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST_CASE("native_crash", "with capture disabled no dump is written and the crash still happens") {
+    ttest::TempDir dir;
+    const fs::path base = dir.path();
+    const int status = run_in_child([&] {
+        SdkLog log;
+        if (!nc::install(base, log)) _exit(42);
+        nc::set_capture_enabled(false);  // consent withdrawn
+        *reinterpret_cast<volatile int *>(g_fault_addr) = 5;
+        _exit(0);
+    });
+    CHECK(WIFSIGNALED(status));
+    CHECK_EQ(WTERMSIG(status), SIGSEGV);
+    SdkLog log;
+    CHECK(!nc::take_previous(base, log).has_value());
 }
 #endif  // __linux__

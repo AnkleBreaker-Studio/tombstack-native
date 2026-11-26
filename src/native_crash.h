@@ -40,11 +40,17 @@ struct NativeCrashDump {
  *  - The HANDLER does arithmetic and write() only: re-entrance guard, PC/LR
  *    from ucontext, linear module resolve, fixed-format dump, fsync — no
  *    malloc, no locks, no printf, no managed callbacks.
- *  - CHAINING: the previous sigaction is saved and re-installed before the
- *    old handler is invoked (SA_SIGINFO and plain handlers both supported),
- *    so Unity / UGS Cloud Diagnostics style co-resident handlers still run;
- *    if the old handler returns, the default action is restored and the
- *    signal re-raised so the process dies with the true signal.
+ *  - CHAINING: the previous sigaction is saved and invoked after the dump is
+ *    written (SA_SIGINFO and plain handlers both supported), so Unity / UGS
+ *    Cloud Diagnostics style co-resident handlers still run. With no previous
+ *    handler (SIG_DFL / SIG_IGN) the signal is fatal: the default action is
+ *    restored and the signal re-raised so the process dies with the true
+ *    signal. When a previous handler RETURNS it may have resolved the fault —
+ *    a managed runtime (Mono, CoreCLR) turns a null dereference into an
+ *    exception by moving the PC, a GC fixes a protected page and retries — so
+ *    verdict_after_chain() decides: resume (the dump is withdrawn) or die.
+ *  - An alternate signal stack already registered on the installing thread is
+ *    kept; one is registered only when none exists.
  *  - NO on-device symbolication: frames are (module, build-id, offset) only;
  *    symbolication happens server-side against uploaded symbols.
  *
@@ -86,6 +92,50 @@ std::optional<NativeCrashDump> parse_dump(std::string_view text);
 
 /** Pure: "SIGSEGV" for 11 etc.; "signal <n>" when unknown. */
 std::string signal_name(int signal_no);
+
+/** What the handler does once the previously installed handler has RETURNED. */
+enum class ChainVerdict {
+    /** The fault was resolved: withdraw the dump and resume execution. */
+    resume,
+    /** The fault is fatal: keep the dump, restore the default action, re-raise. */
+    die,
+    /** The previous handler installed another disposition: keep the dump and let it act. */
+    defer,
+};
+
+/** Facts about one fault, gathered after the previous handler returned. */
+struct ChainFacts {
+    int signal_no{0};
+    /** Our handler is still the installed disposition for the signal. */
+    bool still_registered{true};
+    /** The previous handler moved the PC or the stack pointer (redirected execution). */
+    bool context_changed{false};
+    /** Identical faults in a row that the previous handler returned from unchanged (this one included). */
+    unsigned unchanged_repeats{0};
+};
+
+/** A fault the previous handler keeps returning from unchanged is treated as unresolved
+ *  once it has recurred this many times in a row (each within kRepeatWindowNs). */
+inline constexpr unsigned kMaxUnchangedRepeats = 16;
+inline constexpr std::int64_t kRepeatWindowNs = 1000000000;  // 1 s
+
+/** Pure (host-testable): the handler's decision after the previous handler returned. */
+ChainVerdict verdict_after_chain(const ChainFacts &facts) noexcept;
+
+/** Identical faults (same signal, PC and fault address) returned from unchanged, in a row. */
+struct RepeatTracker {
+    int signal_no{0};
+    std::uint64_t pc{0};
+    std::uint64_t fault_addr{0};
+    std::int64_t last_ns{0};
+    unsigned count{0};
+};
+
+/** Pure (host-testable): record one fault the previous handler returned from with an
+ *  unchanged context and return how many identical ones have now come in a row (a fault
+ *  more than kRepeatWindowNs after the last one starts a new run). */
+unsigned note_unchanged_fault(RepeatTracker &tracker, int signal_no, std::uint64_t pc,
+                              std::uint64_t fault_addr, std::int64_t now_ns) noexcept;
 
 }  // namespace native_crash
 

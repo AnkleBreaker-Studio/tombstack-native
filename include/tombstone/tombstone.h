@@ -144,9 +144,13 @@ typedef struct tombstone_options {
      *  FPE/TRAP) with an async-signal-safe handler that writes a minimal dump
      *  ((module, build-id, offset) frames — NO on-device symbolication) and
      *  chains to any pre-existing handler (Unity / UGS); the dump is turned
-     *  into a crash report at the NEXT launch. POSIX/ELF only (Linux/Android)
-     *  — a no-op elsewhere. Off keeps the existing unclean-shutdown heuristic.
-     *  Enable only with the game engine's own crash handler installed FIRST so
+     *  into a crash report at the NEXT launch. A fault that pre-existing
+     *  handler resolves and returns from (a managed runtime turning a null
+     *  dereference into an exception, a page fixed in place) is resumed and
+     *  not reported; an alternate signal stack already registered on the
+     *  initializing thread is kept. POSIX/ELF only (Linux/Android) — a no-op
+     *  elsewhere. Off keeps the existing unclean-shutdown heuristic. Enable
+     *  only with the game engine's own crash handler installed FIRST so
      *  chaining is exercised. */
     int enable_native_crash_handler;
     /** Optional diagnostics sink (see tombstone_log_callback). NULL = silent. */

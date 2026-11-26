@@ -29,6 +29,12 @@ the `tombstone` library name are stable — Tombstack is the product name).
   Before, init still sent the previous session's crash report and started heartbeats before the
   refusal took effect. Identity, environment and metadata set before init are likewise in place
   before the first heartbeat.
+- With `enable_native_crash_handler` on (Linux/Android), a fault that a handler installed
+  earlier resolves — a Mono or CoreCLR runtime turning a null dereference or a division by
+  zero into a managed exception, for example — no longer ends the game, and is not reported
+  as a crash. A fault nothing resolves still ends the process with its real signal and is
+  reported as before. An alternate signal stack the engine or runtime registered is now kept
+  instead of replaced.
 - Quitting while the network does not answer (captive portal, firewall, server not
   responding) could freeze the game for up to about 30 s inside `tombstone_shutdown` or at
   process exit. Shutdown now cancels the request in progress after its 2 s delivery window,
