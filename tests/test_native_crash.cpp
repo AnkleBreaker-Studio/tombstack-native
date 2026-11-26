@@ -141,6 +141,12 @@ TEST_CASE("native_crash", "a fault a runtime redirected or fixed in place resume
     divide.signal_no = 8;
     divide.context_changed = true;
     CHECK(nc::verdict_after_chain(divide) == nc::ChainVerdict::resume);
+
+    nc::ChainFacts redirected_and_reregistered;  // a runtime that also re-installed itself
+    redirected_and_reregistered.signal_no = 11;
+    redirected_and_reregistered.context_changed = true;
+    redirected_and_reregistered.still_registered = false;
+    CHECK(nc::verdict_after_chain(redirected_and_reregistered) == nc::ChainVerdict::resume);
 }
 
 TEST_CASE("native_crash", "an unresolved, aborting or re-registered fault does not resume") {
@@ -158,22 +164,32 @@ TEST_CASE("native_crash", "an unresolved, aborting or re-registered fault does n
     replaced.signal_no = 11;
     replaced.still_registered = false;
     CHECK(nc::verdict_after_chain(replaced) == nc::ChainVerdict::defer);
+
+    nc::ChainFacts resent;  // it re-sent the signal (debuggerd, crash reporters) and returned
+    resent.signal_no = 11;
+    resent.resent = true;
+    resent.unchanged_repeats = 1;
+    CHECK(nc::verdict_after_chain(resent) == nc::ChainVerdict::die);
 }
 
-TEST_CASE("native_crash", "repeat counting needs the same fault in quick succession") {
+TEST_CASE("native_crash", "repeat counting needs the same fault re-entering right after a return") {
     nc::RepeatTracker tracker;
     const std::int64_t t0 = 5'000'000'000;
     CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x1000, 0x10, t0), 1U);
-    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x1000, 0x10, t0 + 1000), 2U);
-    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x1000, 0x10, t0 + 2000), 3U);
+    // The handler returns 2 s later (a slow previous handler); the fault re-enters at once.
+    tracker.last_exit_ns = t0 + 2'000'000'000;
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x1000, 0x10, t0 + 2'000'010'000), 2U);
+    tracker.last_exit_ns = t0 + 4'000'000'000;
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x1000, 0x10, t0 + 4'000'010'000), 3U);
     // Another faulting instruction, address or signal starts a new run.
-    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x2000, 0x10, t0 + 3000), 1U);
-    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x2000, 0x20, t0 + 4000), 1U);
-    CHECK_EQ(nc::note_unchanged_fault(tracker, 7, 0x2000, 0x20, t0 + 5000), 1U);
-    // So does the same fault long after the last one (a page protected again later).
-    CHECK_EQ(nc::note_unchanged_fault(tracker, 7, 0x2000, 0x20, t0 + 6000), 2U);
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x2000, 0x10, t0 + 4'000'020'000), 1U);
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 11, 0x2000, 0x20, t0 + 4'000'030'000), 1U);
+    CHECK_EQ(nc::note_unchanged_fault(tracker, 7, 0x2000, 0x20, t0 + 4'000'040'000), 1U);
+    // So does the same fault coming back well after the handler resumed it (a page a
+    // collector protects again on its next cycle): that one was resolved.
+    tracker.last_exit_ns = t0 + 4'000'050'000;
     CHECK_EQ(nc::note_unchanged_fault(tracker, 7, 0x2000, 0x20,
-                                      t0 + 6000 + nc::kRepeatWindowNs + 1),
+                                      t0 + 4'000'050'000 + nc::kRepeatWindowNs + 1),
              1U);
 }
 
@@ -301,11 +317,13 @@ void install_previous(int sig, void (*handler)(int, siginfo_t *, void *)) {
     sigaction(sig, &prev, nullptr);
 }
 
-/** Run `child` in a forked child (it must _exit itself); returns the wait status. */
+/** Run `child` in a forked child (it must _exit itself); returns the wait status. A child
+ *  that hangs (a handler regression) is ended by SIGALRM instead of hanging the suite. */
 template <typename Child>
 int run_in_child(Child child) {
     const pid_t pid = fork();
     if (pid == 0) {
+        alarm(10);
         child();
         _exit(99);
     }
@@ -314,7 +332,29 @@ int run_in_child(Child child) {
     return status;
 }
 
+// A crash-reporter-style previous handler: re-raises the signal to end the process by it,
+// then returns.
+void resend_handler(int sig, siginfo_t * /*info*/, void * /*uc*/) { raise(sig); }
+
 }  // namespace
+
+TEST_CASE("native_crash", "a previous handler that re-sends the signal still ends it, dump kept") {
+    ttest::TempDir dir;
+    const fs::path base = dir.path();
+    const int status = run_in_child([&] {
+        install_previous(SIGSEGV, resend_handler);
+        SdkLog log;
+        if (!nc::install(base, log)) _exit(42);
+        *reinterpret_cast<volatile int *>(g_fault_addr) = 5;
+        _exit(0);
+    });
+    CHECK(WIFSIGNALED(status));
+    CHECK_EQ(WTERMSIG(status), SIGSEGV);
+    SdkLog log;
+    const auto dump = nc::take_previous(base, log);
+    CHECK(dump.has_value());
+    CHECK_EQ(dump->signal_no, SIGSEGV);
+}
 
 TEST_CASE("native_crash", "a fault the previous handler fixes in place is resumed, not fatal") {
     ttest::TempDir dir;

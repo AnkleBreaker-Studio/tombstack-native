@@ -92,14 +92,19 @@ ChainVerdict verdict_after_chain(const ChainFacts &facts) noexcept {
         // handler returns, whatever the handler did — keep the dump.
         return ChainVerdict::die;
     }
+    if (facts.context_changed) {
+        // A runtime moved execution on (Mono / CoreCLR managed exception): handled,
+        // even if it also re-registered its own disposition.
+        return ChainVerdict::resume;
+    }
     if (!facts.still_registered) {
         // The previous handler replaced our disposition (typically SIG_DFL, so the
         // re-executed fault ends the process): keep the dump and let that act.
         return ChainVerdict::defer;
     }
-    if (facts.context_changed) {
-        // A runtime moved execution on (Mono / CoreCLR managed exception): handled.
-        return ChainVerdict::resume;
+    if (facts.resent) {
+        // It re-sent the signal to end the process by it: keep the dump and die.
+        return ChainVerdict::die;
     }
     // Returned with the context unchanged: fixed in place (a GC unprotecting a page)
     // and the instruction is retried — unless the same fault keeps coming back.
@@ -108,15 +113,14 @@ ChainVerdict verdict_after_chain(const ChainFacts &facts) noexcept {
 }
 
 unsigned note_unchanged_fault(RepeatTracker &tracker, int signal_no, std::uint64_t pc,
-                              std::uint64_t fault_addr, std::int64_t now_ns) noexcept {
+                              std::uint64_t fault_addr, std::int64_t entered_ns) noexcept {
     const bool same_fault = tracker.count > 0 && tracker.signal_no == signal_no &&
                             tracker.pc == pc && tracker.fault_addr == fault_addr &&
-                            now_ns - tracker.last_ns <= kRepeatWindowNs;
+                            entered_ns - tracker.last_exit_ns <= kRepeatWindowNs;
     tracker.count = same_fault ? tracker.count + 1 : 1;
     tracker.signal_no = signal_no;
     tracker.pc = pc;
     tracker.fault_addr = fault_addr;
-    tracker.last_ns = now_ns;
     return tracker.count;
 }
 
@@ -456,14 +460,26 @@ bool still_registered(int sig) {
     return (current.sa_flags & SA_SIGINFO) != 0 && current.sa_sigaction == tombstone_signal_handler;
 }
 
+/** True when `sig` is pending again (blocked while we run): the previous handler re-sent it. */
+bool signal_pending(int sig) {
+    sigset_t pending;
+    sigemptyset(&pending);
+    if (sigpending(&pending) != 0) return false;
+    return sigismember(&pending, sig) == 1;
+}
+
 extern "C" void tombstone_signal_handler(int sig, siginfo_t *info, void *ucontext) {
+    // The handler may now return into the interrupted code: leave its errno untouched.
+    const int saved_errno = errno;
     // Re-entrance / double-fault guard (atomic test-and-set): a second signal — including one on
     // another thread while we're dumping — must not recurse or share the fd; hand straight to the old
     // handler. Cleared again only when a fault turns out to be handled (resume below).
     if (g_in_handler.test_and_set()) {
         chain_old(sig, info, ucontext);
+        errno = saved_errno;
         return;
     }
+    const std::int64_t entered_ns = monotonic_ns();
 
     std::uintptr_t pc = 0;
     std::uintptr_t lr = 0;
@@ -498,24 +514,29 @@ extern "C" void tombstone_signal_handler(int sig, siginfo_t *info, void *ucontex
     facts.signal_no = sig;
     facts.still_registered = still_registered(sig);
     facts.context_changed = pc_after != pc || extract_sp(ucontext) != sp;
+    facts.resent = signal_pending(sig);
     if (facts.context_changed) {
         g_repeats.count = 0;
     } else {
-        facts.unchanged_repeats = note_unchanged_fault(g_repeats, sig, pc, fault, monotonic_ns());
+        facts.unchanged_repeats = note_unchanged_fault(g_repeats, sig, pc, fault, entered_ns);
     }
     switch (verdict_after_chain(facts)) {
     case ChainVerdict::resume:
         // Handled (a managed exception, a page fixed in place): not a crash.
         retract_dump(fd);
+        g_repeats.last_exit_ns = monotonic_ns();
         g_in_handler.clear();
+        errno = saved_errno;
         return;
     case ChainVerdict::defer:
         if (fd >= 0) fsync(fd);
+        errno = saved_errno;
         return;
     case ChainVerdict::die:
     default:
         if (fd >= 0) fsync(fd);
         reraise_default(sig);
+        errno = saved_errno;
         return;
     }
 }

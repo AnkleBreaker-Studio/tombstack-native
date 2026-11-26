@@ -110,14 +110,19 @@ struct ChainFacts {
     bool still_registered{true};
     /** The previous handler moved the PC or the stack pointer (redirected execution). */
     bool context_changed{false};
+    /** The signal is pending again: the previous handler re-sent it before returning,
+     *  as a crash reporter does to end the process with the true signal. */
+    bool resent{false};
     /** Identical faults in a row that the previous handler returned from unchanged (this one included). */
     unsigned unchanged_repeats{0};
 };
 
 /** A fault the previous handler keeps returning from unchanged is treated as unresolved
- *  once it has recurred this many times in a row (each within kRepeatWindowNs). */
+ *  once it has recurred this many times in a row, each re-entering within kRepeatWindowNs
+ *  of the handler's previous return (an unresolved fault re-enters within microseconds,
+ *  however long the previous handler itself runs). */
 inline constexpr unsigned kMaxUnchangedRepeats = 16;
-inline constexpr std::int64_t kRepeatWindowNs = 1000000000;  // 1 s
+inline constexpr std::int64_t kRepeatWindowNs = 50000000;  // 50 ms
 
 /** Pure (host-testable): the handler's decision after the previous handler returned. */
 ChainVerdict verdict_after_chain(const ChainFacts &facts) noexcept;
@@ -127,15 +132,17 @@ struct RepeatTracker {
     int signal_no{0};
     std::uint64_t pc{0};
     std::uint64_t fault_addr{0};
-    std::int64_t last_ns{0};
+    /** When the handler last returned after resuming such a fault (set by the handler). */
+    std::int64_t last_exit_ns{0};
     unsigned count{0};
 };
 
-/** Pure (host-testable): record one fault the previous handler returned from with an
- *  unchanged context and return how many identical ones have now come in a row (a fault
- *  more than kRepeatWindowNs after the last one starts a new run). */
+/** Pure (host-testable): record one fault, entered at `entered_ns`, that the previous
+ *  handler returned from with an unchanged context; return how many identical ones have
+ *  now come in a row. A fault entering more than kRepeatWindowNs after the handler's last
+ *  return starts a new run. */
 unsigned note_unchanged_fault(RepeatTracker &tracker, int signal_no, std::uint64_t pc,
-                              std::uint64_t fault_addr, std::int64_t now_ns) noexcept;
+                              std::uint64_t fault_addr, std::int64_t entered_ns) noexcept;
 
 }  // namespace native_crash
 
