@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <link.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -185,6 +186,31 @@ std::atomic<bool> g_capture_enabled{false};
 // Faults a previous handler returned from without changing the context. Only touched by the
 // thread that holds g_in_handler, so plain fields are enough.
 RepeatTracker g_repeats;
+
+// Identity (device, inode) of the dump file behind g_state.dump_fd, recorded at install. The
+// handler writes to or truncates the descriptor only while it still refers to that file: a host
+// that closed it and reused the number must never get an unrelated file overwritten.
+std::atomic<std::uintptr_t> g_dump_dev{0};
+std::atomic<std::uintptr_t> g_dump_ino{0};
+static_assert(std::atomic<std::uintptr_t>::is_always_lock_free,
+              "the crash handler reads the dump identity; it must be lock-free");
+
+/** Record which file `fd` refers to (normal context, at install). */
+void remember_dump_identity(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) == 0) {
+        g_dump_dev.store(static_cast<std::uintptr_t>(st.st_dev), std::memory_order_relaxed);
+        g_dump_ino.store(static_cast<std::uintptr_t>(st.st_ino), std::memory_order_relaxed);
+    }
+}
+
+/** True while `fd` still refers to the dump file opened at install (fstat is signal-safe). */
+bool dump_fd_is_ours(int fd) {
+    struct stat st;
+    return fd >= 0 && fstat(fd, &st) == 0 &&
+           static_cast<std::uintptr_t>(st.st_dev) == g_dump_dev.load(std::memory_order_relaxed) &&
+           static_cast<std::uintptr_t>(st.st_ino) == g_dump_ino.load(std::memory_order_relaxed);
+}
 static_assert(std::atomic<bool>::is_always_lock_free,
               "the crash handler reads this flag; it must be lock-free");
 
@@ -419,7 +445,7 @@ void chain_old(int sig, siginfo_t *info, void *ucontext) {
  *  Returns the fd written to, or -1 when capture is off or unavailable. */
 int write_dump(int sig, const siginfo_t *info, std::uintptr_t pc, std::uintptr_t lr) {
     const int fd = g_capture_enabled.load(std::memory_order_relaxed) ? g_state.dump_fd : -1;
-    if (fd < 0) return -1;
+    if (fd < 0 || !dump_fd_is_ours(fd)) return -1;
     write_str(fd, "tombstone-native-crash 1\n");
     write_str(fd, "signal ");
     write_dec(fd, sig);
@@ -438,7 +464,7 @@ int write_dump(int sig, const siginfo_t *info, std::uintptr_t pc, std::uintptr_t
 
 /** Withdraw a dump written for a fault that turned out to be handled. */
 void retract_dump(int fd) {
-    if (fd < 0) return;
+    if (fd < 0 || !dump_fd_is_ours(fd)) return;
     const int truncated = ftruncate(fd, 0);
     (void)truncated;
     lseek(fd, 0, SEEK_SET);
@@ -548,18 +574,30 @@ void set_capture_enabled(bool enabled) noexcept {
 }
 
 bool install(const std::filesystem::path &data_dir, SdkLog &sdk_log) {
+    const std::filesystem::path dump_path = data_dir / kDumpFileName;
     if (g_state.installed) {
+        // Initialized again in this process (after a shutdown, maybe for another data
+        // directory): the previous dump file was consumed by take_previous, so point the
+        // existing descriptor at a fresh one. dup2 swaps it atomically — the handler never
+        // sees a closed or half-replaced descriptor.
+        const int fresh = open(dump_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (fresh >= 0 && dup2(fresh, g_state.dump_fd) >= 0) {
+            remember_dump_identity(g_state.dump_fd);
+        } else {
+            sdk_log.warn("native crash: could not reopen the dump file; crashes are not dumped");
+        }
+        if (fresh >= 0) close(fresh);
         set_capture_enabled(true);
         return true;
     }
 
     // 1) Pre-open the dump fd (truncating): the handler only write()s to it.
-    const std::filesystem::path dump_path = data_dir / kDumpFileName;
-    g_state.dump_fd = open(dump_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    g_state.dump_fd = open(dump_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (g_state.dump_fd < 0) {
         sdk_log.warn("native crash: could not open dump file; handler not installed");
         return false;
     }
+    remember_dump_identity(g_state.dump_fd);
 
     // 2) Pre-capture the loaded-module table (base/end/name/build-id).
     g_state.module_count = 0;

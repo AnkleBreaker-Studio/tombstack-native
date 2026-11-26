@@ -109,6 +109,12 @@ Client::~Client() {
         if (storage_available_ && owns_instance_) {
             marker_.remove();  // clean shutdown: next launch sees no dirty marker
         }
+        if (native_crash_enabled_) {
+            // The handlers stay installed for the life of the process (others may chain
+            // to them); after a clean shutdown they just stop writing dumps. A later
+            // tombstone_init re-arms them with a fresh dump file.
+            native_crash::set_capture_enabled(false);
+        }
     } catch (...) {
         // Destructor must never throw.
     }

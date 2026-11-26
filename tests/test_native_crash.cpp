@@ -415,6 +415,30 @@ TEST_CASE("native_crash", "an alternate signal stack registered before install i
     CHECK_EQ(WEXITSTATUS(status), 0);
 }
 
+TEST_CASE("native_crash", "after a re-init in the same process the dump lands in the new file") {
+    // Shutdown + tombstone_init again: init reads (and deletes) the previous dump file before
+    // re-arming the handler, so the handler must not keep writing to the deleted file.
+    ttest::TempDir first_dir;
+    ttest::TempDir second_dir;
+    const fs::path first = first_dir.path();
+    const fs::path second = second_dir.path();
+    const int status = run_in_child([&] {
+        SdkLog log;
+        if (!nc::install(first, log)) _exit(42);
+        (void)nc::take_previous(first, log);  // what the next init does
+        if (!nc::install(second, log)) _exit(43);  // re-armed for another data directory
+        *reinterpret_cast<volatile int *>(g_fault_addr) = 5;
+        _exit(0);
+    });
+    CHECK(WIFSIGNALED(status));
+    CHECK_EQ(WTERMSIG(status), SIGSEGV);
+    SdkLog log;
+    const auto dump = nc::take_previous(second, log);
+    CHECK(dump.has_value());
+    CHECK_EQ(dump->signal_no, SIGSEGV);
+    CHECK(!nc::take_previous(first, log).has_value());
+}
+
 TEST_CASE("native_crash", "with capture disabled no dump is written and the crash still happens") {
     ttest::TempDir dir;
     const fs::path base = dir.path();

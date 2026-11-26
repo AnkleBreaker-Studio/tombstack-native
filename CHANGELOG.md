@@ -63,6 +63,9 @@ the `tombstone` library name are stable — Tombstack is the product name).
   game instead of reporting the crash. Earlier notes suggested calling it from a top-level
   exception filter or Unreal's crash path. Report errors the game survives from a normal
   thread; a crash the process cannot survive is reported at the next launch.
+- With `enable_native_crash_handler` on, a game that shuts the SDK down and initializes it
+  again in the same process (an Android activity restart, an editor play session) no longer
+  loses the native crashes that follow: they are dumped to the current data directory again.
 - With `enable_native_crash_handler` on (Linux/Android), a fault that a handler installed
   earlier resolves — a Mono or CoreCLR runtime turning a null dereference or a division by
   zero into a managed exception, for example — no longer ends the game, and is not reported
