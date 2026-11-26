@@ -132,6 +132,27 @@ TEST_CASE("client_storage", "a non-ASCII UTF-8 data_dir is used as given") {
 }
 
 #if defined(_WIN32)
+TEST_CASE("client_storage", "a data_dir that is not UTF-8 never fails init") {
+    // "é" as the single Windows-1252 byte, not UTF-8: earlier versions accepted such paths
+    // with MSVC (this assumes a 1252 system code page, as on Western-language Windows and
+    // the CI runners).
+    ttest::TempDir root;
+    const std::string legacy = root.path().string() + "/legacy-\xE9";
+    fake_transport::reset();
+    fake_transport::Response offline;
+    offline.transport_error = true;
+    fake_transport::set_default(offline);
+    {
+        const SdkSession session{kTokenA, legacy};
+        CHECK(session.ok());  // never a failed init over the path's encoding
+        CHECK(tombstone_report_crash("sig-legacy", "h", nullptr, 0) == TOMBSTONE_OK);
+    }
+#if defined(_MSC_VER)
+    // MSVC reads such a path in the ANSI code page, as before: its storage still works.
+    CHECK_EQ(count_files(fs::path{legacy} / "pending" / "crashes"), std::size_t{1});
+#endif
+}
+
 namespace {
 /** Sets a Windows environment variable through the wide CRT API for the scope. */
 class ScopedWideEnv {
