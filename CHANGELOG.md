@@ -7,6 +7,10 @@ the `tombstone` library name are stable — Tombstack is the product name).
 
 ### Fixed
 
+- A device whose clock is more than five minutes off lost everything it sent: the server refused
+  the request and the SDK deleted the crash or bug report. The SDK now takes the server's time from
+  every response and uses it when signing, retrying at once with the corrected time, so these
+  devices report normally after their first request. A refusal of this kind never deletes a report.
 - Crash and bug reports whose text holds bytes that are not valid UTF-8 (a Windows path or a
   system error message in a local code page, in the stack hint, a log line or a breadcrumb) were
   refused by the server and then deleted. Each invalid sequence is now sent as the Unicode

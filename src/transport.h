@@ -1,6 +1,7 @@
 #ifndef TOMBSTONE_SRC_TRANSPORT_H
 #define TOMBSTONE_SRC_TRANSPORT_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <utility>
@@ -19,6 +20,10 @@ struct HttpResponse {
      *  worker parses the seconds form on 429/503 and raises its backoff to it
      *  (capped — see retry_after.h). Untrimmed; the parser tolerates OWS/CRLF. */
     std::string retry_after;
+    /** Raw value of the response's Date header ("" when absent). The worker
+     *  learns the server's clock from it (server_clock.h) so signed requests
+     *  carry a timestamp the server accepts. Untrimmed. */
+    std::string date;
 };
 
 /**
@@ -40,12 +45,15 @@ public:
     /**
      * POST a JSON body with `Authorization: Bearer <token>`. When `sign` is set
      * (ingest endpoints only — never pull/editor), an `X-Tombstack-Signature`
-     * header is computed at send time over the raw body keyed by `token` (S3).
-     * Signing is fail-soft: any signing error sends the request unsigned (the
-     * server accepts unsigned ingest during the rollout).
+     * header is computed at send time over the raw body keyed by `token` (S3),
+     * stamped with `sign_unix_seconds`: the caller passes its server-corrected
+     * clock (ServerClock), never the raw device clock. Signing is fail-soft:
+     * any signing error sends the request unsigned (the server accepts
+     * unsigned ingest during the rollout).
      */
     HttpResponse post_json(const std::string &url, const std::string &token,
-                           const std::string &body, long timeout_seconds, bool sign);
+                           const std::string &body, long timeout_seconds, bool sign,
+                           std::int64_t sign_unix_seconds);
 
     /**
      * PUT raw text to a presigned URL (session-log upload). Sends

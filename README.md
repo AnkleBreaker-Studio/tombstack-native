@@ -106,8 +106,9 @@ TOMBSTONE_BASE_URL=https://host TOMBSTONE_TOKEN=tmb_... \
 ```
 
 The SDK also drains the queue itself on the next `tombstone_init`. Delivery
-classification matches the uploader: 2xx delete, 429/5xx/network keep,
-other 4xx drop (poison).
+classification: 2xx delete, 429/5xx/network keep, a 401 about the request
+signature keep and retry (the SDK signs with the server's clock, learned from
+each response's `Date`), other 4xx drop (poison).
 
 ## Building
 

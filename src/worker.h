@@ -1,6 +1,7 @@
 #ifndef TOMBSTONE_SRC_WORKER_H
 #define TOMBSTONE_SRC_WORKER_H
 
+#include "server_clock.h"
 #include "sidecar_queue.h"
 
 #include <atomic>
@@ -20,6 +21,7 @@ namespace tombstone {
 class SdkLog;
 class SessionLog;
 class Transport;
+struct HttpResponse;
 
 /** How hard the SDK fights to deliver a payload (mirrors the Unity SDK). */
 enum class Durability {
@@ -59,6 +61,11 @@ struct UploadJob {
  * persists durable leftovers as sidecars, chases presigned session-log uploads,
  * and paces the rolling session-log flush. Owns no payload semantics — the
  * client builds bodies; the worker delivers them.
+ *
+ * Signing clock: every ingest response's `Date` teaches the ServerClock, and
+ * every signed request is stamped with its corrected time. A 401 whose body is
+ * not `invalid_api_key` is a signing-clock problem, so it is retried — at once
+ * when that very response corrected the clock — and never deleted.
  */
 class Worker {
 public:
@@ -121,13 +128,15 @@ private:
     bool take_ready_job(UploadJob &out);
     std::chrono::steady_clock::time_point next_wakeup() const;
     void process(UploadJob &job);
-    void handle_post_result(UploadJob &job, bool transport_error, long status,
-                            const std::string &response_body, const std::string &retry_after);
+    /** Route one ingest POST result. `clock_moved`: this response's Date just
+     *  corrected the signing clock (a signature 401 is then retried at once). */
+    void handle_post_result(UploadJob &job, const HttpResponse &response, bool clock_moved);
     void schedule_log_upload(const UploadJob &job, const std::string &response_body);
     /** Re-queue with backoff — raised to a server Retry-After (seconds form, on
      *  429/503; capped at 300 s — see retry_after.h) when larger — or persist /
-     *  drop at max_attempts. `retry_after_seconds` < 0 means "no header". */
-    void retry_or_give_up(UploadJob &job, long retry_after_seconds = -1);
+     *  drop at max_attempts. `retry_after_seconds` < 0 means "no header";
+     *  `retry_now` skips the wait (the cause of the failure was just fixed). */
+    void retry_or_give_up(UploadJob &job, long retry_after_seconds = -1, bool retry_now = false);
     void persist_leftovers();
 
     Transport &transport_;
@@ -135,6 +144,7 @@ private:
     SessionLog &session_log_;
     SdkLog &sdk_log_;
     const std::string token_;
+    ServerClock server_clock_;  // learned from ingest responses; read when signing
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;

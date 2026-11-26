@@ -13,11 +13,17 @@ size.
 - Since 0.9.3, signed ingest sends `X-Tombstack-Signature: t=<unixSec>,v1=<hex>`,
   with HMAC-SHA256(token, `<t>.<rawBody>`). Earlier native releases used the obsolete
   `X-Tombstone-Signature` name, which the current server did not verify.
+- `t` is the server's time as learned from the `Date` header of every ingest
+  response (the server refuses a `t` more than 300 s from its own clock), so a
+  device whose clock is wrong still signs correctly after its first response.
 - Responses use `{ "success": true, "data": ... }` /
   `{ "success": false, "error": ... }`.
-- Status classification (matches `tools/lib/upload-classify.mjs`):
+- Status classification:
   **2xx** delivered → delete sidecar · **408/429/5xx/network** transient →
-  retry with backoff, keep sidecar · **other 4xx** poison → drop.
+  retry with backoff, keep sidecar · **401 `invalid_signature`** (or a 401
+  without a code) → retry, at once when the response's `Date` corrected the
+  clock; never deleted · **other 4xx** (a 401 `invalid_api_key` included)
+  poison → drop.
 
 ## Common fields
 

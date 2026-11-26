@@ -12,20 +12,33 @@ namespace tombstone {
 
 namespace {
 
-/** Mirrors tools/lib/upload-classify.mjs: 2xx delete, 429/5xx keep, other 4xx drop. */
+/** 2xx delete, 408/429/5xx/network keep, a signature 401 keep (retry with the
+ *  corrected clock), any other 4xx drop (a 401 refusing the token included). */
 enum class Outcome { delivered, transient, poison };
 
-Outcome classify(bool transport_error, long status) noexcept {
+Outcome classify(bool transport_error, long status, Unauthorized unauthorized) noexcept {
     if (transport_error) {
         return Outcome::transient;
     }
     if (status >= 200 && status < 300) {
         return Outcome::delivered;
     }
+    if (unauthorized == Unauthorized::signature) {
+        return Outcome::transient;  // a wrong device clock, corrected from this response's Date
+    }
     if (status == 408 || status == 429 || status >= 500) {
         return Outcome::transient;
     }
     return Outcome::poison;
+}
+
+/** How a 401 reads for this job: only a SIGNED request can fail on its signature. */
+Unauthorized unauthorized_kind(const UploadJob &job, const HttpResponse &response) noexcept {
+    if (response.transport_error || response.status != 401) {
+        return Unauthorized::none;
+    }
+    return job.sign_body ? classify_unauthorized(response.status, response.body)
+                         : Unauthorized::key;
 }
 
 /** Honor Retry-After only where the server means "back off and come back":
@@ -204,7 +217,8 @@ void Worker::process(UploadJob &job) {
                 job.form_fields.empty()
                     ? transport_.put_text(job.url, job.raw, log_upload_timeout_seconds)
                     : transport_.post_log(job.url, job.form_fields, job.raw, log_upload_timeout_seconds);
-            const Outcome outcome = classify(response.transport_error, response.status);
+            const Outcome outcome =
+                classify(response.transport_error, response.status, Unauthorized::none);
             if (outcome == Outcome::transient && job.attempt + 1 < max_attempts) {
                 // Retries share the backoff but log uploads are never persisted —
                 // the presigned URL is dead by the next launch anyway.
@@ -216,17 +230,24 @@ void Worker::process(UploadJob &job) {
         }
         const auto sent_at = std::chrono::steady_clock::now();
         const HttpResponse response =
-            transport_.post_json(job.url, token_, job.body, request_timeout_seconds, job.sign_body);
+            transport_.post_json(job.url, token_, job.body, request_timeout_seconds, job.sign_body,
+                                 server_clock_.now_unix_seconds());
         const auto round_trip = std::chrono::steady_clock::now() - sent_at;
+        // Every ingest response carries the server's Date, success or failure: learn the
+        // signing clock from it so a device whose clock is wrong signs correctly from now on.
+        const bool clock_moved = !response.transport_error && server_clock_.observe(response.date);
+        if (clock_moved) {
+            sdk_log_.info("device clock differs from the server's; signing with the server time");
+        }
         // K1: decide whether to emit the round-trip metric BEFORE handle_post_result,
         // which may move the job into the retry queue. Only successful ingest POSTs
         // count; suppress_rtt exempts the metrics batch so an rtt sample cannot recurse
         // into an endless batch->rtt->batch loop.
-        const bool emit_rtt = rtt_handler_ && job.sign_body && !job.suppress_rtt &&
-                              classify(response.transport_error, response.status) ==
-                                  Outcome::delivered;
-        handle_post_result(job, response.transport_error, response.status, response.body,
-                           response.retry_after);
+        const bool emit_rtt =
+            rtt_handler_ && job.sign_body && !job.suppress_rtt &&
+            classify(response.transport_error, response.status, Unauthorized::none) ==
+                Outcome::delivered;
+        handle_post_result(job, response, clock_moved);
         if (emit_rtt) {
             const double ms = std::chrono::duration<double, std::milli>(round_trip).count();
             rtt_handler_(ms);
@@ -238,24 +259,24 @@ void Worker::process(UploadJob &job) {
     }
 }
 
-void Worker::handle_post_result(UploadJob &job, bool transport_error, long status,
-                                const std::string &response_body,
-                                const std::string &retry_after) {
-    switch (classify(transport_error, status)) {
+void Worker::handle_post_result(UploadJob &job, const HttpResponse &response, bool clock_moved) {
+    const Unauthorized unauthorized = unauthorized_kind(job, response);
+    switch (classify(response.transport_error, response.status, unauthorized)) {
     case Outcome::delivered:
         sidecars_.remove(job.sidecar_path);
         if (job.request_log) {
-            schedule_log_upload(job, response_body);
+            schedule_log_upload(job, response.body);
         }
         if (job.parse_ack && ack_handler_) {
             // Heartbeat command channel: hand the 2xx body to the client, which
             // enqueues a fulfil POST for each pull request targeting it.
-            ack_handler_(response_body);
+            ack_handler_(response.body);
         }
         return;
     case Outcome::poison:
         // Rejected by validation/auth — retrying forever would just burn quota.
-        sdk_log_.warn("payload rejected with HTTP " + std::to_string(status) + "; dropping");
+        sdk_log_.warn("payload rejected with HTTP " + std::to_string(response.status) +
+                      "; dropping");
         sidecars_.remove(job.sidecar_path);
         return;
     case Outcome::transient:
@@ -263,7 +284,10 @@ void Worker::handle_post_result(UploadJob &job, bool transport_error, long statu
         if (job.durability == Durability::ephemeral) {
             return;  // a missed heartbeat is stale data, never retried
         }
-        retry_or_give_up(job, retry_after_hint(status, retry_after));
+        // A signature refusal whose own Date just corrected the clock is fixed now:
+        // retry at once rather than after the backoff.
+        retry_or_give_up(job, retry_after_hint(response.status, response.retry_after),
+                         clock_moved && unauthorized == Unauthorized::signature);
         return;
     }
 }
@@ -290,13 +314,13 @@ void Worker::schedule_log_upload(const UploadJob &job, const std::string &respon
     enqueue(std::move(put));
 }
 
-void Worker::retry_or_give_up(UploadJob &job, long retry_after_seconds) {
+void Worker::retry_or_give_up(UploadJob &job, long retry_after_seconds, bool retry_now) {
     if (job.attempt + 1 < max_attempts) {
         ++job.attempt;
         // Exponential backoff (2s,4s,8s,16s), raised to the server's Retry-After
         // (429/503) when that is larger, capped at 300s (retry_after.h).
-        job.not_before =
-            std::chrono::steady_clock::now() + retry_delay(job.attempt, retry_after_seconds);
+        const auto now = std::chrono::steady_clock::now();
+        job.not_before = retry_now ? now : now + retry_delay(job.attempt, retry_after_seconds);
         enqueue(std::move(job));
         return;
     }

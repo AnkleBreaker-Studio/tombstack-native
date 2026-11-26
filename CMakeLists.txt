@@ -85,6 +85,7 @@ set(TOMBSTONE_CORE_SOURCES
   src/retry_after.cpp
   src/sampler.cpp
   src/sdk_log.cpp
+  src/server_clock.cpp
   src/session_log.cpp
   src/session_marker.cpp
   src/sidecar_queue.cpp
@@ -175,6 +176,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_preinit.cpp
     tests/test_retry_after.cpp
     tests/test_sampler.cpp
+    tests/test_server_clock.cpp
     tests/test_session_log.cpp
     tests/test_session_marker.cpp
     tests/test_sidecar.cpp
@@ -191,9 +193,32 @@ if(TOMBSTONE_BUILD_TESTS)
 
   foreach(suite
       batch breadcrumb_ring clock concurrency dedupe device_identity frame_stats json_scan
-      json_writer native_crash payloads preinit retry_after sampler session_log session_marker
-      sidecar signature start_gate)
+      json_writer native_crash payloads preinit retry_after sampler server_clock session_log
+      session_marker sidecar signature start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
+  endforeach()
+
+  # Delivery, client and C ABI behaviour over an in-process fake transport (tests/fake_transport.cpp
+  # replaces src/transport_curl.cpp at link time): no network and no libcurl needed.
+  set(TOMBSTONE_CLIENT_TEST_SDK_SOURCES ${TOMBSTONE_IMPURE_SOURCES})
+  list(REMOVE_ITEM TOMBSTONE_CLIENT_TEST_SDK_SOURCES src/transport_curl.cpp)
+  add_executable(tombstone_client_tests
+    tests/main.cpp
+    tests/fake_transport.cpp
+    tests/test_worker_signing.cpp
+    ${TOMBSTONE_CLIENT_TEST_SDK_SOURCES}
+    $<TARGET_OBJECTS:tombstone_core>
+  )
+  target_compile_definitions(tombstone_client_tests PRIVATE TOMBSTONE_STATIC)
+  target_include_directories(tombstone_client_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests
+  )
+  target_link_libraries(tombstone_client_tests PRIVATE Threads::Threads tombstone_warnings)
+
+  foreach(suite worker_signing)
+    add_test(NAME ${suite} COMMAND tombstone_client_tests ${suite})
   endforeach()
 
   find_program(TOMBSTONE_NODE_EXECUTABLE node)
