@@ -135,11 +135,14 @@ logs); none of it is sent after a later re-grant.
   server names (it checks again at least every hour, so raising the cap resumes
   a running game within the hour). Crash and bug reports are kept and sent after
   the stop; heartbeats, events and metrics captured during it are not kept.
-- **401 `invalid_api_key` or 403**: the SDK token was refused (revoked, rotated,
-  or not an ingest token). Nothing more is sent until the next launch; crash and
-  bug reports stay on disk and are tried again then.
-- **Other 4xx** (400, 404, 413, 422): the server refuses that payload itself,
-  and it is deleted. Check `endpoint` if every payload gets a 404.
+- **401 `invalid_api_key`, 403, 404 or any other refusal not about the payload**:
+  the SDK token was refused (revoked, rotated, or not an ingest token), or the
+  request did not reach Tombstack (a 404 usually means `endpoint` is wrong).
+  Nothing more is sent until the next launch; crash and bug reports stay on disk
+  and are tried again then, so a build with the right endpoint and the same token
+  sends them.
+- **400, 413, 422**: the server rejects that payload itself as malformed or too
+  large, and it is deleted.
 - Reports no launch could deliver within 90 days are deleted unsent.
 
 ## Shipping checklist

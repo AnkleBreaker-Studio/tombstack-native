@@ -17,6 +17,11 @@ bool is_transient(bool transport_error, long status) noexcept {
     return transport_error || status == 408 || status == 429 || status >= 500;
 }
 
+/** The only answers that condemn the payload itself rather than this launch's sending. */
+bool is_malformed_or_too_large(long status) noexcept {
+    return status == 400 || status == 413 || status == 422;
+}
+
 /** value[at .. at+count) as decimal digits; false when any is not a digit. */
 bool read_digits(std::string_view value, std::size_t at, std::size_t count, int &out) noexcept {
     int result = 0;
@@ -56,10 +61,10 @@ Settle settle_api_response(bool transport_error, long status, Unauthorized unaut
     if (status == 402) {
         return Settle::spend_cap;
     }
-    if (ingest_post && (status == 401 || status == 403)) {
-        return Settle::token_refused;
+    if (is_malformed_or_too_large(status) || !ingest_post) {
+        return Settle::drop;
     }
-    return Settle::drop;
+    return Settle::stop_launch;
 }
 
 Settle settle_upload_response(bool transport_error, long status) noexcept {

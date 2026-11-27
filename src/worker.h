@@ -75,13 +75,13 @@ struct UploadJob {
  * when that very response corrected the clock — and never deleted.
  *
  * Stops: a 402 (spending cap) stops every request to the Tombstack API until
- * the `resumesAt` it names (bounded, see delivery_policy.h); a refused SDK token
- * (401 `invalid_api_key`, 403) stops them for the rest of the launch. During a
- * stop, crash and bug reports and anything already on disk are kept — parked
- * until a spending-cap stop ends, left on disk for a later launch when the
- * token was refused — and everything else (heartbeats, new event and metric
- * batches, pull-request calls) is dropped unsent. Log uploads to a slot granted
- * earlier still go out.
+ * the `resumesAt` it names (bounded, see delivery_policy.h); any other refusal
+ * of an ingest POST that is not about the payload (a refused SDK token, a 403,
+ * a 404...) stops them for the rest of the launch. During a stop, crash and bug
+ * reports and anything already on disk are kept — parked until a spending-cap
+ * stop ends, left on disk for a later launch otherwise — and everything else
+ * (heartbeats, new event and metric batches, pull-request calls) is dropped
+ * unsent. Log uploads to a slot granted earlier still go out.
  */
 class Worker {
 public:
@@ -182,12 +182,13 @@ private:
     };
     /** 402: send nothing until the stop the response names ends. */
     void stop_for_spend_cap(UploadJob &job, const HttpResponse &response);
-    /** 401 invalid_api_key / 403 on an ingest POST: send nothing more this launch. */
-    void stop_for_refused_token(UploadJob &job, long status);
+    /** An ingest POST refused for a reason other than its payload (401 invalid_api_key,
+     *  403, 404...): send nothing more this launch. */
+    void stop_for_launch(UploadJob &job, long status);
     /** Under mutex_: a stop is in force at `now` for requests to the Tombstack API. */
     bool sending_stopped_locked(std::chrono::steady_clock::time_point now) const noexcept;
     /** Under mutex_: a job that will not be sent during the stop. A kept report is
-     *  parked (spending cap) or left to its file (refused token); the rest is dropped. */
+     *  parked (spending cap) or left to its file (stopped launch); the rest is dropped. */
     void set_aside_locked(UploadJob &&job, SetAside &out);
     /** Under mutex_: set aside every queued request to the Tombstack API. */
     void set_aside_queue_locked(SetAside &out);
@@ -208,7 +209,7 @@ private:
     // Stops (see the class comment), guarded by mutex_.
     std::deque<UploadJob> parked_;  // kept reports waiting for a spending-cap stop to end
     std::chrono::steady_clock::time_point stopped_until_{};  // end of a spending-cap stop
-    bool token_refused_{false};                               // for the rest of the launch
+    bool stopped_for_launch_{false};  // an ingest refusal not about the payload: until exit
     std::chrono::seconds min_spend_cap_stop_{spend_cap_min_pause_seconds};  // see the setter
     bool running_{false};
     bool in_flight_{false};

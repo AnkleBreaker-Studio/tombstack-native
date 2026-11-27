@@ -13,12 +13,13 @@
  * handler or an exception filter (see tombstone_report_crash).
  *
  * Server refusals: a 402 (the studio's spending cap) stops every request until
- * the time the server names (re-checked at least hourly), and a refused SDK
- * token (401 invalid_api_key, or 403) stops them until the next launch. Crash
+ * the time the server names (re-checked at least hourly). A refused SDK token
+ * (401 invalid_api_key), a 403, a 404 (usually a wrong endpoint) or any other
+ * refusal that is not about the payload stops them until the next launch. Crash
  * and bug reports are kept through either stop and sent afterwards; heartbeats,
- * events and metrics captured during it are not. A report the server refuses
- * itself (400, 404, 413, 422) is deleted, as is one no launch delivered within
- * 90 days.
+ * events and metrics captured during it are not. Only a report the server
+ * rejects as malformed or too large (400, 413, 422) is deleted, and one no
+ * launch delivered within 90 days.
  *
  * The SDK binds to one implicit process-wide client (tombstone_handle is the
  * opaque type reserved for a future multi-instance API). Double-init and

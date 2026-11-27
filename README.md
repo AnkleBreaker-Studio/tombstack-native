@@ -124,8 +124,8 @@ handled:
 | 408, 429, 5xx, no answer | Kept and retried with backoff (a 429/503 `Retry-After` raises the wait). |
 | 401 about the request signature | Kept and retried: the SDK signs with the server's clock, learned from each response's `Date`. |
 | 402 `spend_cap_reached` (the studio's spending cap) | Nothing is sent until the `resumesAt` it names, re-checked at least hourly. Crash and bug reports are kept and sent afterwards; heartbeats, events and metrics from the stop are not kept. |
-| 401 `invalid_api_key`, or 403 | Nothing more is sent with this token until the next launch. Crash and bug reports stay on disk. |
-| Any other 4xx (400, 404, 413, 422...) | The server refuses the payload itself: it is deleted. |
+| 400, 413, 422 | The server rejects the payload itself as malformed or too large: it is deleted. |
+| Any other refusal: 401 `invalid_api_key`, 403, 404 (usually a wrong `endpoint`)... | Nothing more is sent until the next launch. Crash and bug reports stay on disk. |
 
 ## Building
 

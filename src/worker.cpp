@@ -244,7 +244,7 @@ std::chrono::steady_clock::time_point Worker::next_wakeup() const {
             wakeup = queued.not_before;
         }
     }
-    if (!parked_.empty() && !token_refused_ && stopped_until_ < wakeup) {
+    if (!parked_.empty() && !stopped_for_launch_ && stopped_until_ < wakeup) {
         wakeup = stopped_until_;  // parked reports go out when the spending-cap stop ends
     }
     if (batch_drainer_) {
@@ -337,8 +337,8 @@ void Worker::handle_post_result(UploadJob &job, const HttpResponse &response, bo
     case Settle::spend_cap:
         stop_for_spend_cap(job, response);
         return;
-    case Settle::token_refused:
-        stop_for_refused_token(job, response.status);
+    case Settle::stop_launch:
+        stop_for_launch(job, response.status);
         return;
     case Settle::retry:
     default:
@@ -441,11 +441,11 @@ void Worker::stop_for_spend_cap(UploadJob &job, const HttpResponse &response) {
     cv_.notify_all();  // flush() waiters see the emptied queue
 }
 
-void Worker::stop_for_refused_token(UploadJob &job, long status) {
+void Worker::stop_for_launch(UploadJob &job, long status) {
     SetAside set_aside;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        token_refused_ = true;
+        stopped_for_launch_ = true;
         set_aside_locked(std::move(job), set_aside);
         set_aside_queue_locked(set_aside);
         std::deque<UploadJob> parked;
@@ -455,14 +455,14 @@ void Worker::stop_for_refused_token(UploadJob &job, long status) {
         }
     }
     finish_set_aside(set_aside);
-    sdk_log_.error("the SDK token was refused (HTTP " + std::to_string(status) +
+    sdk_log_.error("the server refused this SDK's requests (HTTP " + std::to_string(status) +
                    "): nothing more is sent until the next launch; crash and bug reports "
-                   "stay on disk");
+                   "stay on disk. Check the SDK token and options.endpoint");
     cv_.notify_all();
 }
 
 bool Worker::sending_stopped_locked(std::chrono::steady_clock::time_point now) const noexcept {
-    return token_refused_ || now < stopped_until_;
+    return stopped_for_launch_ || now < stopped_until_;
 }
 
 void Worker::set_aside_locked(UploadJob &&job, SetAside &out) {
@@ -475,7 +475,7 @@ void Worker::set_aside_locked(UploadJob &&job, SetAside &out) {
     if (!kept_through_stop(job)) {
         return;  // a stop is a hard stop: nothing else captured meanwhile is kept for later
     }
-    if (!token_refused_ && parked_.size() < max_queue_size) {
+    if (!stopped_for_launch_ && parked_.size() < max_queue_size) {
         parked_.push_back(std::move(job));  // sent once the spending-cap stop ends
         return;
     }

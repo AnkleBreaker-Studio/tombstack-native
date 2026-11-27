@@ -25,10 +25,11 @@ size.
   clock; never deleted · **402** (`spend_cap_reached`, any route) → send nothing
   until the body's `resumesAt`, bounded to [60 s, 1 h] (15 min without one);
   crash and bug reports and pending files are kept and sent afterwards,
-  heartbeats and new event/metric batches are dropped unsent · **401
-  `invalid_api_key` or 403 on an ingest POST** → send nothing more this launch;
-  crash and bug reports and pending files stay on disk · **other 4xx** (400, 404,
-  413, 422...; and a 401/403 on a pull-request call) poison → drop.
+  heartbeats and new event/metric batches are dropped unsent · **400/413/422**
+  (malformed or too large) poison → drop · **any other refusal of an ingest POST**
+  (401 `invalid_api_key`, 403, 404, a redirect...) → send nothing more this
+  launch; crash and bug reports and pending files stay on disk · a pull-request
+  call refused with anything but 402 drops only that call.
 - A pending file no launch delivered within 90 days is deleted unsent.
 
 ## Common fields

@@ -98,10 +98,11 @@ the `tombstone` library name are stable — Tombstack is the product name).
   running game within the hour), keeps crash and bug reports and sends them afterwards, and
   drops the heartbeats, events and metrics captured during the stop, which the server would
   not store.
-- A refused SDK token (401 `invalid_api_key`, or a 403) made the SDK delete every crash and
-  bug report it tried to send while it kept sending. It now stops sending for the rest of the
-  launch and keeps crash and bug reports on disk for the next one. A payload the server
-  refuses itself (400, 404, 413, 422) is still deleted.
+- A refused SDK token (401 `invalid_api_key`), a 403 or a 404 (usually a wrong `endpoint`)
+  made the SDK delete every crash and bug report it tried to send while it kept sending. Any
+  refusal of this kind now stops sending for the rest of the launch and keeps crash and bug
+  reports on disk for the next one, as the Unity and Godot SDKs and the CLI uploader do. Only a
+  payload the server rejects as malformed or too large (400, 413, 422) is still deleted.
 - On macOS, reading the host identifier at `tombstone_init` could wait without limit; it now
   gives up after 2 s, and the player identifier then derives from a random source as on a
   machine without one. On iOS the SDK reads no host identifier (an app may not): the

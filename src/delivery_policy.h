@@ -15,19 +15,24 @@ namespace tombstone {
  * - delivered: 2xx.
  * - retry: no answer, 408, 429, 5xx, or a 401 about the request signature (a wrong
  *   device clock, see server_clock.h). Backoff, raised to a 429/503 Retry-After.
- * - drop: the server refuses this payload itself (400, 404, 413, 422 and any other
- *   4xx not listed here). Retrying cannot help, so it is deleted.
+ * - drop: the server rejects this payload itself as malformed or too large (400,
+ *   413, 422). Retrying cannot help, so it is deleted.
  * - spend_cap: 402, the studio's spending cap is reached. The server refuses
  *   everything until `resumesAt`, so nothing is sent until then; crash and bug
  *   reports are kept and sent once the stop ends.
- * - token_refused: a 401 refusing the SDK token (`invalid_api_key`) or a 403 on an
- *   ingest POST. Nothing more is sent with this token this launch; crash and bug
- *   reports are kept on disk for a later launch.
+ * - stop_launch: any other refusal of an ingest POST — a refused SDK token (401
+ *   `invalid_api_key`), a 403, a 404 (usually a wrong endpoint), a redirect.
+ *   Nothing more is sent this launch; crash and bug reports are kept on disk for a
+ *   later launch, bounded by the queue limits and the 90-day expiry.
+ *
+ * A pull-request call (log pulls) is not an ingest POST: the server answers a stale or
+ * mistargeted one with 403 or 410, which refuses that call alone, so any refusal of
+ * one other than 402 drops just that call.
  */
-enum class Settle { delivered, retry, drop, spend_cap, token_refused };
+enum class Settle { delivered, retry, drop, spend_cap, stop_launch };
 
-/** Settle an answer from the Tombstack API. `ingest_post`: a signed ingest request
- *  (pull-request calls are not: their 401/403 refuse only that call). Pure. */
+/** Settle an answer from the Tombstack API. `ingest_post`: a signed ingest request,
+ *  as opposed to a pull-request call. Pure. */
 Settle settle_api_response(bool transport_error, long status, Unauthorized unauthorized,
                            bool ingest_post) noexcept;
 

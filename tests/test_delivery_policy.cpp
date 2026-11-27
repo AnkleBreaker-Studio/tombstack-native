@@ -51,8 +51,8 @@ TEST_CASE("delivery_policy", "408, 429 and 5xx are retried") {
 
 TEST_CASE("delivery_policy", "a signature 401 is retried, a refused token stops the launch") {
     CHECK(same(ingest(401, Unauthorized::signature), Settle::retry));
-    CHECK(same(ingest(401, Unauthorized::key), Settle::token_refused));
-    CHECK(same(ingest(403), Settle::token_refused));
+    CHECK(same(ingest(401, Unauthorized::key), Settle::stop_launch));
+    CHECK(same(ingest(403), Settle::stop_launch));
 }
 
 TEST_CASE("delivery_policy", "402 is the spending-cap stop on every API call") {
@@ -60,17 +60,27 @@ TEST_CASE("delivery_policy", "402 is the spending-cap stop on every API call") {
     CHECK(same(pull_request(402), Settle::spend_cap));
 }
 
-TEST_CASE("delivery_policy", "a payload the server refuses is dropped, 404 included") {
-    for (const long status : {400L, 404L, 405L, 409L, 410L, 413L, 422L}) {
+TEST_CASE("delivery_policy", "only a malformed or too large payload is dropped") {
+    for (const long status : {400L, 413L, 422L}) {
         CHECK(same(ingest(status), Settle::drop));
     }
 }
 
+TEST_CASE("delivery_policy", "any other refusal of an ingest POST stops the launch and keeps reports") {
+    // A wrong endpoint (404), a proxy or firewall (403, 405), a redirect: not the payload's fault.
+    for (const long status : {404L, 405L, 409L, 410L, 418L, 301L, 302L, 307L}) {
+        CHECK(same(ingest(status), Settle::stop_launch));
+    }
+}
+
 TEST_CASE("delivery_policy", "a refused pull-request call drops only that call") {
-    // An ingest-only token may not create log pulls: that 403 must not stop ingestion.
+    // The server answers a stale or mistargeted log pull with 403 or 410, and an ingest-only
+    // token may not create one: none of that may stop ingestion.
+    for (const long status : {400L, 404L, 410L, 413L}) {
+        CHECK(same(pull_request(status), Settle::drop));
+    }
     CHECK(same(pull_request(401, Unauthorized::key), Settle::drop));
     CHECK(same(pull_request(403), Settle::drop));
-    CHECK(same(pull_request(404), Settle::drop));
 }
 
 TEST_CASE("delivery_policy", "an upload to the storage host is delivered, retried or dropped") {

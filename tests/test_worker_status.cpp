@@ -1,6 +1,6 @@
 // How the worker acts on the server's refusals (delivery_policy.h): a 402 spending-cap
-// stop, a refused SDK token (401 invalid_api_key / 403), and a payload the server
-// refuses (404). Runs the real Worker over the fake transport.
+// stop, a stop for the launch (401 invalid_api_key, 403, 404...), and a payload the
+// server rejects itself (400, 413). Runs the real Worker over the fake transport.
 
 #include "clock.h"
 #include "fake_transport.h"
@@ -136,7 +136,8 @@ TEST_CASE("worker_status", "a refused log-pull call stops nothing else") {
     CHECK(!fs::exists(report));
 }
 
-TEST_CASE("worker_status", "a 404 drops that report and stops nothing else") {
+TEST_CASE("worker_status", "a 404 keeps the reports and stops sending for the launch") {
+    // Usually a wrong endpoint: a build with the right one and the same token sends them.
     ttest::TempDir dir;
     WorkerRig rig{dir.path()};
     fake_transport::push("/ingest/crashes", refused(404, R"({"success":false,"error":"not found"})"));
@@ -144,10 +145,32 @@ TEST_CASE("worker_status", "a 404 drops that report and stops nothing else") {
     const fs::path first = rig.enqueue_crash();
     const fs::path second = rig.enqueue_crash();
     rig.worker->start();
+    CHECK(fake_transport::wait_for_requests(1, seconds{5}));
+    CHECK(rig.worker->flush(seconds{2}));
+    rig.enqueue_heartbeat();
+    CHECK(nothing_more_sent(1, milliseconds{1500}));
+
+    rig.worker->stop();
+    CHECK(fs::exists(first));
+    CHECK(fs::exists(second));
+}
+
+TEST_CASE("worker_status", "a malformed or too large payload is dropped and stops nothing else") {
+    ttest::TempDir dir;
+    WorkerRig rig{dir.path()};
+    fake_transport::push("/ingest/crashes",
+                         refused(400, R"({"success":false,"error":"validation failed"})"));
+    fake_transport::push("/ingest/crashes", refused(413, R"({"success":false,"error":"too large"})"));
+
+    const fs::path invalid = rig.enqueue_crash();
+    const fs::path too_large = rig.enqueue_crash();
+    const fs::path fine = rig.enqueue_crash();
+    rig.worker->start();
     CHECK(rig.worker->flush(seconds{5}));
-    CHECK_EQ(fake_transport::count_suffix("/ingest/crashes"), std::size_t{2});
-    CHECK(!fs::exists(first));   // refused itself: deleted
-    CHECK(!fs::exists(second));  // delivered
+    CHECK_EQ(fake_transport::count_suffix("/ingest/crashes"), std::size_t{3});
+    CHECK(!fs::exists(invalid));    // the server rejected the payload itself: deleted
+    CHECK(!fs::exists(too_large));
+    CHECK(!fs::exists(fine));       // delivered
 }
 
 TEST_CASE("worker_status", "a 402 on a log-pull call stops ingestion too") {

@@ -43,6 +43,8 @@ TEST_CASE("header_contract", "the server refusals and what happens to reports ar
     CHECK(top.find("402") != std::string::npos);
     CHECK(top.find("401 invalid_api_key") != std::string::npos);
     CHECK(top.find("403") != std::string::npos);
+    CHECK(top.find("404") != std::string::npos);
+    CHECK(top.find("(400, 413, 422)") != std::string::npos);  // the only payloads deleted
     CHECK(top.find("90 days") != std::string::npos);
 }
 
