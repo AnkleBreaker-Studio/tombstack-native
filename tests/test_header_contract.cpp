@@ -45,3 +45,10 @@ TEST_CASE("header_contract", "the server refusals and what happens to reports ar
     CHECK(top.find("403") != std::string::npos);
     CHECK(top.find("90 days") != std::string::npos);
 }
+
+TEST_CASE("header_contract", "the header does not say that every entry point returns a result") {
+    // Eight entry points return void.
+    const std::string header = read_public_header();
+    CHECK(!header.empty());
+    CHECK(header.find("Every entry point returns a tombstone_result") == std::string::npos);
+}

@@ -5,9 +5,10 @@
  * Tombstone Native SDK — crash & telemetry client for any game engine.
  *
  * Pure C99 ABI: no C++ types cross this boundary and no call ever throws.
- * Every entry point returns a tombstone_result. The SDK is fail-silent by
- * design: internal failures degrade to result codes and (optionally) lines on
- * the user-provided log callback — never to console output or exceptions.
+ * Entry points return a tombstone_result, except the fire-and-forget ones
+ * declared void. The SDK is fail-silent by design: internal failures degrade to
+ * result codes and (optionally) lines on the user-provided log callback — never
+ * to console output or exceptions.
  * No entry point is async-signal-safe: never call the SDK from a signal
  * handler or an exception filter (see tombstone_report_crash).
  *
@@ -205,7 +206,8 @@ TOMBSTONE_API tombstone_result tombstone_shutdown(void);
  * is granted (at init by default) it acquires a persistent device-derived
  * provisional id ("dev_" + 16 lowercase hex — the machine id hashed salted with
  * the game token; the raw machine id never goes on the wire), and every payload
- * carries it until you set a real id. Revoking consent deletes the stored id. The first tombstone_set_user(real_id) after init upgrades the SAME
+ * carries it until you set a real id. Revoking consent deletes the stored id.
+ * The first tombstone_set_user(real_id) after init upgrades the SAME
  * session: the provisional id rides heartbeats (and crash/bug bodies) once as
  * `priorUserId` until a heartbeat is acked, so the server merges the session's
  * pre-login telemetry under the real player. Passing NULL/empty (logout)

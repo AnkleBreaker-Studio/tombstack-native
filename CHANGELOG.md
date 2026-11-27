@@ -107,6 +107,8 @@ the `tombstone` library name are stable — Tombstack is the product name).
   machine without one. On iOS the SDK reads no host identifier (an app may not): the
   identifier derives from a random source kept in `data_dir`. The SDK also builds with
   MinGW-w64.
+- The header said every entry point returns a `tombstone_result`; eight return `void`. It now
+  says so, and its top comment summarises how the SDK handles server refusals.
 
 ## [0.9.4] - 2026-09-18
 
