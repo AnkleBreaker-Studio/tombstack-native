@@ -2,7 +2,8 @@
 
 Standalone C/C++ crash & telemetry client for **any** game engine — Unreal,
 Godot, custom engines, tools, servers. Built from source with one CMake
-invocation on Windows, Linux, and macOS (CI-proven on all three), as a shared
+invocation on Windows, Linux, and macOS (CI-proven on all three; CI also
+cross-compiles the code and unit tests for Android and iOS), as a shared
 library — the build outputs `tombstone.dll` / `libtombstone.so` /
 `libtombstone.dylib` — or a static one, behind a pure C99 header, so anything
 that can call C can use it. Building really is one line:
@@ -138,7 +139,8 @@ Requires CMake 3.18+ and a C++17 compiler. libcurl is found via `find_package(CU
 SHA-256-pinned curl 8.22.0 FetchContent fallback (Schannel on Windows, OpenSSL on Linux/macOS).
 Install the OpenSSL development package when using the fallback outside Windows.
 Node.js 22+ enables the additional local HTTP wire-contract test. Options: `TOMBSTONE_BUILD_STATIC`,
-`TOMBSTONE_BUILD_EXAMPLES`, `TOMBSTONE_BUILD_TESTS`.
+`TOMBSTONE_BUILD_EXAMPLES`, `TOMBSTONE_BUILD_TESTS`, and `TOMBSTONE_BUILD_SDK` (default ON; OFF
+builds only the unit tests, without libcurl, as CI does to cross-compile for Android and iOS).
 
 ## Scope & roadmap
 

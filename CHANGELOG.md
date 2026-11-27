@@ -110,6 +110,12 @@ the `tombstone` library name are stable — Tombstack is the product name).
 - The header said every entry point returns a `tombstone_result`; eight return `void`. It now
   says so, and its top comment summarises how the SDK handles server refusals.
 
+### Added
+
+- CI cross-compiles the SDK code and unit tests for Android (arm64-v8a, armeabi-v7a, x86_64)
+  and iOS, and runs the unit tests on an iOS simulator. The new CMake option
+  `TOMBSTONE_BUILD_SDK=OFF` builds only the unit tests, without libcurl.
+
 ## [0.9.4] - 2026-09-18
 
 - Fix a copied range-loop variable in the new batch tests. GCC/Clang treat it as an error under the SDK's warnings-as-errors policy, so the default Linux/macOS build of 0.9.3 failed even though Windows compiled. Runtime transport behaviour is unchanged from 0.9.3.

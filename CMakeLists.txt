@@ -7,6 +7,9 @@ project(tombstone VERSION 0.9.4 LANGUAGES C CXX)
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
 option(TOMBSTONE_BUILD_TESTS "Build and register the unit tests" ON)
+# OFF builds the unit tests only, without libcurl: how CI cross-compiles every platform's code
+# (Android, iOS) where no TLS stack is at hand. The SDK libraries need it ON.
+option(TOMBSTONE_BUILD_SDK "Build the tombstone libraries, examples and wire test (needs libcurl)" ON)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,8 +34,10 @@ endif()
 # ---------------------------------------------------------------------------
 # libcurl: system package first, FetchContent fallback (HTTP+TLS only).
 # ---------------------------------------------------------------------------
-find_package(CURL 7.56 QUIET)
-if(NOT CURL_FOUND)
+if(TOMBSTONE_BUILD_SDK)
+  find_package(CURL 7.56 QUIET)
+endif()
+if(TOMBSTONE_BUILD_SDK AND NOT CURL_FOUND)
   message(STATUS "tombstone: system libcurl not found; fetching curl 8.22.0")
   include(FetchContent)
   if(POLICY CMP0135)
@@ -115,26 +120,28 @@ set(TOMBSTONE_IMPURE_SOURCES
 # ---------------------------------------------------------------------------
 # The shared library (the artifact engines load).
 # ---------------------------------------------------------------------------
-add_library(tombstone SHARED ${TOMBSTONE_IMPURE_SOURCES} $<TARGET_OBJECTS:tombstone_core>)
-target_include_directories(tombstone
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-  PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-target_compile_definitions(tombstone PRIVATE TOMBSTONE_EXPORTS)
-target_link_libraries(tombstone PRIVATE CURL::libcurl Threads::Threads tombstone_warnings)
-set_target_properties(tombstone PROPERTIES
-  VERSION ${PROJECT_VERSION}
-  SOVERSION ${PROJECT_VERSION_MAJOR}
-  CXX_VISIBILITY_PRESET hidden
-  VISIBILITY_INLINES_HIDDEN ON
-)
+if(TOMBSTONE_BUILD_SDK)
+  add_library(tombstone SHARED ${TOMBSTONE_IMPURE_SOURCES} $<TARGET_OBJECTS:tombstone_core>)
+  target_include_directories(tombstone
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      $<INSTALL_INTERFACE:include>
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(tombstone PRIVATE TOMBSTONE_EXPORTS)
+  target_link_libraries(tombstone PRIVATE CURL::libcurl Threads::Threads tombstone_warnings)
+  set_target_properties(tombstone PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+  )
+endif()
 
 # Optional static variant. Consumers must define TOMBSTONE_STATIC, which the
 # INTERFACE definition propagates automatically.
-if(TOMBSTONE_BUILD_STATIC)
+if(TOMBSTONE_BUILD_STATIC AND TOMBSTONE_BUILD_SDK)
   add_library(tombstone_static STATIC ${TOMBSTONE_IMPURE_SOURCES} $<TARGET_OBJECTS:tombstone_core>)
   target_include_directories(tombstone_static
     PUBLIC
@@ -150,7 +157,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Examples (pure C99 consumers of the shared library).
 # ---------------------------------------------------------------------------
-if(TOMBSTONE_BUILD_EXAMPLES)
+if(TOMBSTONE_BUILD_EXAMPLES AND TOMBSTONE_BUILD_SDK)
   add_executable(tombstone_minimal examples/minimal.c)
   target_link_libraries(tombstone_minimal PRIVATE tombstone)
 
@@ -241,7 +248,7 @@ if(TOMBSTONE_BUILD_TESTS)
   endforeach()
 
   find_program(TOMBSTONE_NODE_EXECUTABLE node)
-  if(TOMBSTONE_NODE_EXECUTABLE)
+  if(TOMBSTONE_NODE_EXECUTABLE AND TOMBSTONE_BUILD_SDK)
     add_executable(tombstone_wire_probe tests/wire_probe.cpp src/worker.cpp src/transport_curl.cpp
       $<TARGET_OBJECTS:tombstone_core>)
     target_include_directories(tombstone_wire_probe PRIVATE src include)
@@ -256,12 +263,14 @@ endif()
 # Install rules.
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
-install(TARGETS tombstone
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
-if(TOMBSTONE_BUILD_STATIC)
+if(TOMBSTONE_BUILD_SDK)
+  install(TARGETS tombstone
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  )
+endif()
+if(TOMBSTONE_BUILD_STATIC AND TOMBSTONE_BUILD_SDK)
   install(TARGETS tombstone_static ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
 install(DIRECTORY include/tombstone DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
