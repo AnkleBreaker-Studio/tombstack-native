@@ -7,6 +7,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#ifndef RRF_SUBKEY_WOW6464KEY
+#define RRF_SUBKEY_WOW6464KEY 0x00010000  // winreg.h value; missing from MinGW-w64 headers
+#endif
 #elif defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <ctime>
@@ -125,11 +128,16 @@ std::string read_machine_id() {
         return {};
     }
     return std::string{value};  // RegGetValue NUL-terminates REG_SZ reads
+#elif defined(__APPLE__) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    // iOS and its family offer an app no host identifier: the SDK derives the id
+    // from a random source instead, kept in data_dir like any other.
+    return {};
 #elif defined(__APPLE__)
     // gethostuuid is libc-only (no IOKit link): the same IOPlatformUUID-backed
-    // host UUID, without pulling a framework into the build.
+    // host UUID, without pulling a framework into the build. A zero timeout would
+    // mean "wait indefinitely", inside tombstone_init: bound it.
     uuid_t uuid = {};
-    const struct timespec timeout = {0, 0};
+    const struct timespec timeout = {2, 0};
     if (gethostuuid(uuid, &timeout) != 0) {
         return {};
     }

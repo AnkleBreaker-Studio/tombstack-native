@@ -31,7 +31,8 @@ std::filesystem::path default_data_root();
  * it salted with the per-game ingest token. Windows: the
  * HKLM\SOFTWARE\Microsoft\Cryptography MachineGuid (read from the 64-bit
  * registry view). Linux: the first line of /etc/machine-id. macOS: the host
- * UUID via gethostuuid(). Returns "" on any failure or unknown platform — the
+ * UUID via gethostuuid() (waits at most 2 s). iOS and its family: none, an app
+ * may not read one. Returns "" on any failure or unknown platform — the
  * caller falls back to a random source.
  */
 std::string read_machine_id();

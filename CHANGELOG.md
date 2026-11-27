@@ -102,6 +102,11 @@ the `tombstone` library name are stable — Tombstack is the product name).
   bug report it tried to send while it kept sending. It now stops sending for the rest of the
   launch and keeps crash and bug reports on disk for the next one. A payload the server
   refuses itself (400, 404, 413, 422) is still deleted.
+- On macOS, reading the host identifier at `tombstone_init` could wait without limit; it now
+  gives up after 2 s, and the player identifier then derives from a random source as on a
+  machine without one. On iOS the SDK reads no host identifier (an app may not): the
+  identifier derives from a random source kept in `data_dir`. The SDK also builds with
+  MinGW-w64.
 
 ## [0.9.4] - 2026-09-18
 
