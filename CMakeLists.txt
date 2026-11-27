@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.18)
 # NOTE: this version is DUPLICATED as a literal in src/tombstone_api.cpp (`sdk_version`), which is what
 # tombstone_version() returns. Bump both together — 0.9.1's changelog records that the reported version
-# was once stuck at 0.8.0 for exactly this reason. Deriving it from PROJECT_VERSION is the real fix.
-project(tombstone VERSION 0.9.4 LANGUAGES C CXX)
+# was once stuck at 0.8.0 for exactly this reason. The client_version test fails when the two differ.
+project(tombstone VERSION 0.10.0 LANGUAGES C CXX)
 
 option(TOMBSTONE_BUILD_STATIC "Also build a static tombstone library" OFF)
 option(TOMBSTONE_BUILD_EXAMPLES "Build the example programs" ON)
@@ -229,12 +229,14 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_client_shutdown.cpp
     tests/test_client_storage.cpp
     tests/test_client_telemetry.cpp
+    tests/test_client_version.cpp
     tests/test_worker_signing.cpp
     tests/test_worker_status.cpp
     ${TOMBSTONE_CLIENT_TEST_SDK_SOURCES}
     $<TARGET_OBJECTS:tombstone_core>
   )
-  target_compile_definitions(tombstone_client_tests PRIVATE TOMBSTONE_STATIC)
+  target_compile_definitions(tombstone_client_tests PRIVATE TOMBSTONE_STATIC
+    "TOMBSTONE_PROJECT_VERSION=\"${PROJECT_VERSION}\"")
   target_include_directories(tombstone_client_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -243,7 +245,7 @@ if(TOMBSTONE_BUILD_TESTS)
   target_link_libraries(tombstone_client_tests PRIVATE Threads::Threads tombstone_warnings)
 
   foreach(suite client_consent client_instances client_native_report client_preinit
-      client_shutdown client_storage client_telemetry worker_signing worker_status)
+      client_shutdown client_storage client_telemetry client_version worker_signing worker_status)
     add_test(NAME ${suite} COMMAND tombstone_client_tests ${suite})
   endforeach()
 

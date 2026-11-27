@@ -3,7 +3,20 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
-## [Unreleased]
+## [0.10.0] - 2026-11-27
+
+> **Upgrade note:** no API or ABI change, so a 0.9.x integration builds and runs unchanged.
+> What changes for a game that updates:
+> - With `data_dir` unset, the game keeps its files in a folder of its own
+>   (`Tombstone/game-<16 hex>` under the platform default). Reports a 0.9.x build left pending
+>   in the old shared folder are not read or sent; the player identifier is derived again from
+>   the same inputs, so it normally stays the same on the same machine.
+> - A spending-cap stop (402), a refused SDK token or a 404 (usually a wrong `endpoint`) no
+>   longer deletes crash and bug reports: they wait on disk and are sent once the server accepts
+>   again. Nothing else is sent meanwhile. Only a report the server rejects as malformed or too
+>   large (400, 413, 422) is deleted.
+> - Withdrawing consent discards everything not yet delivered, and with consent off at init
+>   nothing is read, stored or sent until it is granted.
 
 ### Fixed
 
