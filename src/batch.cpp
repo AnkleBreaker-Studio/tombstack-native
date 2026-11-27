@@ -29,6 +29,11 @@ bool Batch::has_items() const {
     return !items_.empty();
 }
 
+void Batch::clear() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    items_.clear();
+}
+
 std::optional<std::string> Batch::drain_if_ready(const std::string &sent_at_iso,
                                                  std::chrono::steady_clock::time_point now,
                                                  bool force) {

@@ -7,6 +7,7 @@
 #include "payloads.h"
 #include "platform.h"
 #include "signature.h"
+#include "storage_owner.h"
 #include "transport.h"
 
 #include <algorithm>
@@ -71,6 +72,10 @@ const char *ingest_path_for(SidecarKind kind) noexcept {
         return crashes_path;
     case SidecarKind::bug_report:
         return bug_reports_path;
+    case SidecarKind::event_batch:
+        return events_batch_path;
+    case SidecarKind::metric_batch:
+        return metrics_batch_path;
     case SidecarKind::event:
     default:
         return events_path;
@@ -82,6 +87,22 @@ std::string trim_trailing_slash(std::string value) {
         value.pop_back();
     }
     return value;
+}
+
+/** options.data_dir as a path. It is UTF-8; bytes that are not valid UTF-8 (an
+ *  ANSI-encoded path, which earlier versions accepted on Windows with MSVC) are read
+ *  in the platform's narrow encoding as before. Empty when neither reading works:
+ *  the SDK then runs without storage instead of failing init. */
+fs::path data_dir_path(const char *value) {
+    try {
+        return fs::u8path(value);
+    } catch (...) {
+    }
+    try {
+        return fs::path{value};
+    } catch (...) {
+        return {};
+    }
 }
 
 }  // namespace
@@ -96,13 +117,22 @@ Client::~Client() {
         }
         if (worker_) {
             // Quit flush (spec section 16): drain buffered events/metrics and
-            // give the worker a bounded window to deliver before we tear down.
+            // give the worker a bounded window to deliver before we tear down —
+            // unless its thread never ran (start() failed), when nothing could.
             flush_all_batches();
-            worker_->flush(std::chrono::milliseconds{2000});
+            if (started_) {
+                worker_->flush(std::chrono::milliseconds{2000});
+            }
             worker_->stop();  // persists durable leftovers as sidecars
         }
-        if (storage_available_) {
+        if (storage_available_ && owns_instance_) {
             marker_.remove();  // clean shutdown: next launch sees no dirty marker
+        }
+        if (native_crash_enabled_) {
+            // The handlers stay installed for the life of the process (others may chain
+            // to them); after a clean shutdown they just stop writing dumps. A later
+            // tombstone_init re-arms them with a fresh dump file.
+            native_crash::set_capture_enabled(false);
         }
     } catch (...) {
         // Destructor must never throw.
@@ -146,20 +176,33 @@ tombstone_result Client::init(const tombstone_options &options) {
     heartbeat_interval_ = std::chrono::seconds{
         std::clamp(interval, min_heartbeat_interval_s, max_heartbeat_interval_s)};
 
-    data_dir_ = (options.data_dir != nullptr && options.data_dir[0] != '\0')
-                    ? fs::path{options.data_dir}
-                    : default_data_dir();
-    configure_storage();
-    // v0.9: install the native crash handler once storage is ready (dump fd +
-    // module table). Opt-in + fail-soft: unsupported platforms / setup failure
-    // just leave native_crash_enabled_ behavior to the unclean-shutdown
-    // heuristic. Must run AFTER the previous dump was picked up (above).
-    if (native_crash_enabled_ && storage_available_) {
-        native_crash::install(data_dir_, sdk_log_);
+    // Storage belongs to one game: the default is a directory of this game's own,
+    // and a directory another game's token already owns is never shared
+    // (storage_owner.h). Nothing an older SDK left in the shared base is read.
+    // data_dir is UTF-8 (u8path): a plain narrow path is read in the ANSI code page on
+    // Windows, which garbles any non-ASCII folder name.
+    const bool has_data_dir = options.data_dir != nullptr && options.data_dir[0] != '\0';
+    const fs::path requested = has_data_dir ? data_dir_path(options.data_dir) : fs::path{};
+    const fs::path default_root = has_data_dir ? fs::path{} : default_data_root();
+    if (has_data_dir && requested.empty()) {
+        sdk_log_.error("options.data_dir is not a path this platform can open (pass UTF-8): "
+                       "running without offline persistence, unclean-shutdown detection or "
+                       "session log");
+    } else if (has_data_dir) {
+        configure_storage(requested);
+    } else if (!default_root.empty()) {
+        configure_storage(default_root / storage_owner::game_dir_name(token_));
+    } else {
+        sdk_log_.error("options.data_dir is required on this platform (on Android, pass the "
+                       "app's files directory): running without offline persistence, "
+                       "unclean-shutdown detection or session log");
     }
-    // v0.8: acquire the device-derived provisional user id BEFORE anything can
-    // send (worker/heartbeats start below), so no payload ever ships anonymous.
-    acquire_device_identity();
+    // The device identity is read and stored, and the native crash handler armed,
+    // only once consent is granted: now when it already is (before the pre-init
+    // replay, which stamps that identity), else at tombstone_set_consent(1).
+    if (consent_) {
+        prepare_consented_capture();
+    }
 
     transport_ = std::make_unique<Transport>(sdk_log_);
     worker_ = std::make_unique<Worker>(*transport_, sidecars_, session_log_, sdk_log_, token_);
@@ -168,33 +211,52 @@ tombstone_result Client::init(const tombstone_options &options) {
     if (rtt_metric_enabled_) {
         worker_->set_rtt_handler([this](double ms) { record_rtt_metric(ms); });
     }
-    worker_->start();
 
+    // Captures are accepted from here on, but nothing is sent before start(): the C
+    // layer replays the pre-init calls in between, so the first heartbeat already
+    // carries the identity / environment the game set before init.
     initialized_ = true;
-    drain_sidecars();
-
-    if (heartbeats_enabled_) {
-        heartbeat_thread_ = std::thread{[this] { heartbeat_loop(); }};
-    }
-    if (consent_) {
-        start_session_tracking();
-    }
     return TOMBSTONE_OK;
 }
 
-/** Resolve the data dir and wire up the disk-backed subsystems. Degrades to
- * memory-only operation (no sidecars, no session log) when the dir is unusable. */
-void Client::configure_storage() {
+void Client::start() {
+    worker_->start();
+    started_ = true;
+    if (heartbeats_enabled_) {
+        heartbeat_thread_ = std::thread{[this] { heartbeat_loop(); }};
+    }
+    const std::lock_guard<std::mutex> lock(consent_mutex_);
+    if (consent_) {
+        // Without consent, what earlier sessions left pending stays on disk, unsent,
+        // until tombstone_set_consent(1).
+        on_consent_granted();
+    }
+}
+
+/** Claim the data dir for this game and wire up the disk-backed subsystems. Degrades
+ * to memory-only operation (no sidecars, no session log) when the dir is unusable. */
+void Client::configure_storage(const fs::path &requested) {
     try {
-        std::error_code ec;
-        fs::create_directories(data_dir_, ec);
-        if (ec && !fs::exists(data_dir_, ec)) {
+        data_dir_ = storage_owner::claim(requested, storage_owner::storage_key(token_), sdk_log_);
+        if (data_dir_.empty()) {
             sdk_log_.warn("data dir unavailable; running without offline persistence");
             return;
         }
         storage_available_ = true;
         sidecars_.configure(data_dir_);
         marker_.configure(data_dir_);
+        owns_instance_ = instance_lock_.try_acquire(data_dir_);
+        if (!owns_instance_) {
+            // Another process of this game is running on this directory: its session
+            // marker, session log and crash dump are its own, and so are the files
+            // earlier sessions left pending. Reports from this process still go out.
+            sdk_log_.info("another process of this game uses the data directory: running "
+                          "without unclean-shutdown detection, session log and crash dump");
+            session_log_enabled_ = false;
+            unclean_detection_enabled_ = false;
+            native_crash_enabled_ = false;
+            return;
+        }
         if (session_log_enabled_) {
             session_log_.configure(data_dir_);
             had_previous_log_ = session_log_.rotate_for_new_session();
@@ -221,9 +283,10 @@ void Client::configure_storage() {
  * anonymous user. The id is "dev_" + 16 lowercase hex of FNV-1a-64 over the
  * machine id salted with the per-game ingest token — the raw machine id never
  * goes on the wire, and the same machine yields a different id per game. The
- * FILE WINS over a re-derive on later launches, so the id stays stable across
- * an ingest-token rotation. Fail-soft throughout: worst case (no machine id
- * AND no writable storage) is a random-but-well-formed id per launch.
+ * FILE WINS over a re-derive on later launches. Storage is per token
+ * (storage_owner.h), so a new token starts from a fresh directory and a new id.
+ * Fail-soft throughout: worst case (no machine id AND no writable storage) is a
+ * random-but-well-formed id per launch.
  */
 void Client::acquire_device_identity() {
     std::string id = read_persisted_identity();
@@ -289,22 +352,100 @@ void Client::persist_identity(const std::string &id) {
  * a previous session: a granted log presign must upload that run's preserved
  * log, never this session's fresh one. */
 void Client::drain_sidecars() {
+    const std::uint64_t epoch = capture_epoch();
     for (SidecarRecord &record : sidecars_.scan()) {
         if (record.kind == SidecarKind::crash) {
             has_restored_crash_ = true;
         }
         UploadJob job;
         job.url = endpoint_ + ingest_path_for(record.kind);
-        job.body = std::move(record.body);
+        // A file an earlier version wrote may hold bytes that are not UTF-8: the server
+        // could never verify its signature, and it would be retried on every launch.
+        job.body = utf8_sanitized(record.body);
         job.durability = Durability::write_ahead;
         job.kind = record.kind;
         job.sidecar_path = record.path;
-        job.request_log = (record.kind != SidecarKind::event) &&
-                          find_bool_field(job.body, "log").value_or(false);
+        const bool report =
+            record.kind == SidecarKind::crash || record.kind == SidecarKind::bug_report;
+        job.request_log = report && find_bool_field(job.body, "log").value_or(false);
         job.log_from_previous = true;
-        job.sign_body = true;  // restored crash/bug/event sidecars are ingest POSTs (S3)
+        job.sign_body = true;  // restored sidecars are all ingest POSTs (S3)
+        job.suppress_rtt = record.kind == SidecarKind::metric_batch;
+        job.consent_epoch = epoch;
         worker_->enqueue(std::move(job));
     }
+}
+
+void Client::prepare_consented_capture() {
+    // v0.8: acquire the device-derived provisional user id BEFORE capture opens,
+    // so no payload ever ships anonymous.
+    if (!identity_acquired_) {
+        acquire_device_identity();
+        identity_acquired_ = true;
+    }
+    // v0.9: install (or re-arm) the native crash handler once storage is ready
+    // (dump fd + module table). Opt-in + fail-soft: unsupported platforms / setup
+    // failure leave the unclean-shutdown heuristic. Runs after the previous run's
+    // dump was picked up (configure_storage), since installing truncates it.
+    if (native_crash_enabled_ && storage_available_) {
+        native_crash::install(data_dir_, sdk_log_);
+    }
+}
+
+void Client::forget_device_identity() {
+    {
+        const std::lock_guard<std::mutex> lock(user_mutex_);
+        provisional_user_id_.clear();
+        pending_prior_user_id_.clear();
+        prior_in_flight_.clear();
+    }
+    if (storage_available_) {
+        std::error_code ec;
+        fs::remove(data_dir_ / identity_file_name, ec);
+    }
+    identity_acquired_ = false;  // a re-grant derives and stores it again
+}
+
+void Client::on_consent_granted() {
+    // Only the process owning the directory sends what earlier sessions left pending:
+    // a second process of the game would send the same files a second time.
+    if (!sidecars_drained_ && owns_instance_) {
+        sidecars_drained_ = true;
+        drain_sidecars();
+    }
+    start_session_tracking();
+}
+
+void Client::purge_for_revoked_consent() {
+    // Nothing captured before the revoke may leave the device, now or after a later
+    // re-grant. The heartbeat lock makes a beat being built right now land in the
+    // queue before the purge empties it.
+    {
+        const std::lock_guard<std::mutex> heartbeat_lock(heartbeat_mutex_);
+        worker_->revoke_consent();
+    }
+    event_batch_.clear();
+    metric_batch_.clear();
+    breadcrumbs_.clear();
+    (void)frame_stats_.consume();
+    forget_device_identity();
+    native_crash::set_capture_enabled(false);  // the handler still chains, but writes no dump
+    if (storage_available_) {
+        sidecars_.clear();  // this session's pending reports and earlier sessions' alike
+        if (session_log_enabled_) {
+            session_log_.clear();
+        }
+        if (owns_instance_) {
+            marker_.remove();
+        }
+    }
+    {
+        const std::lock_guard<std::mutex> lock(session_tracking_mutex_);
+        session_tracking_started_ = false;  // a re-grant starts tracking afresh
+        previous_marker_.reset();
+    }
+    previous_native_dump_.reset();
+    had_previous_log_ = false;
 }
 
 /**
@@ -335,6 +476,10 @@ void Client::start_session_tracking() {
  * Only when no crash survived do we send this synthetic report.
  */
 void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
+    const std::uint64_t epoch = capture_epoch();
+    if (!capture_allowed()) {
+        return;
+    }
     if (has_restored_crash_) {
         // A managed crash sidecar survived — richer than anything we can
         // synthesize; consume any native dump so it can't double-report.
@@ -347,7 +492,7 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
     if (previous_native_dump_.has_value()) {
         const NativeCrashDump dump = *previous_native_dump_;
         previous_native_dump_.reset();
-        report_native_crash(previous, dump);
+        report_native_crash(previous, dump, epoch);
         return;
     }
     CrashPayload payload;
@@ -364,7 +509,7 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
     // This launch's crumbs belong to this session, not the dead one.
     payload.log = session_log_enabled_ && had_previous_log_;
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
-                   SidecarKind::crash, payload.log, /*log_from_previous=*/true);
+                   SidecarKind::crash, payload.log, /*log_from_previous=*/true, epoch);
 }
 
 /**
@@ -376,7 +521,8 @@ void Client::report_unclean_shutdown(const SessionMarkerData &previous) {
  * signature). A SIGABRT is classified "signal" (a managed abort/assert path)
  * vs. the memory-access signals as "native_crash".
  */
-void Client::report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump) {
+void Client::report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump,
+                                 std::uint64_t consent_epoch) {
     std::string frames_text;
     for (const NativeCrashFrame &f : dump.frames) {
         frames_text += f.module;
@@ -403,6 +549,10 @@ void Client::report_native_crash(const SessionMarkerData &previous, const Native
     // Signature over the native frames (falls back to the signal when frames
     // were unresolved) — mirrors compute_crash_signature's hint+frames hashing.
     payload.signature = compute_crash_signature(sig_name, frames_text);
+    // Sent as the grouping key too: the server's own stack grouping drops the
+    // 0x offsets of these unsymbolicated frames, which would merge every crash
+    // site in a module (and build) into a single issue.
+    payload.fingerprint = payload.signature;
     payload.stack_hint = "Native crash: " + sig_name + " at " + fault;
     payload.stack_trace = frames_text;
     payload.user_id = current_user_id();
@@ -417,7 +567,7 @@ void Client::report_native_crash(const SessionMarkerData &previous, const Native
     payload.crash_type = (dump.signal_no == 6) ? "signal" : "native_crash";
     payload.os_signal = dump.signal_no;
     enqueue_ingest(crashes_path, build_crash_json(payload), Durability::write_ahead,
-                   SidecarKind::crash, payload.log, /*log_from_previous=*/true);
+                   SidecarKind::crash, payload.log, /*log_from_previous=*/true, consent_epoch);
 }
 
 void Client::heartbeat_loop() {
@@ -427,6 +577,7 @@ void Client::heartbeat_loop() {
         // first heartbeat registers a provisional-identity "production" session
         // before the game has set identity/environment/metadata (v0.8: the
         // device-derived dev_ id, never anonymous).
+        const std::uint64_t epoch = capture_epoch();
         if (capture_allowed() && start_gate_.is_set()) {
             try {
                 HeartbeatPayload payload;
@@ -502,6 +653,7 @@ void Client::heartbeat_loop() {
                 job.durability = Durability::ephemeral;  // a missed beat is stale data
                 job.parse_ack = true;  // the 202 ack may carry pull requests for us
                 job.sign_body = true;  // heartbeats are an ingest POST — sign them (S3)
+                job.consent_epoch = epoch;
                 if (carrying_device) {
                     device_carry_in_flight_.store(true, std::memory_order_relaxed);
                 }
@@ -570,6 +722,7 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
             metadata_in_flight_json_.clear();
             metadata_in_flight_epoch_ = -1;
         }
+        const std::uint64_t epoch = capture_epoch();
         if (!capture_allowed() || response_body.empty()) {
             return;
         }
@@ -594,6 +747,7 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
             job.durability = Durability::persist_on_failure;  // retried in-session with backoff
             job.request_log = true;  // chase data.logUpload -> PUT the current session log
             job.no_persist = true;   // the presign is time-sensitive; never sidecar across launches
+            job.consent_epoch = epoch;
             worker_->enqueue(std::move(job));
         }
     } catch (const std::exception &e) {
@@ -604,13 +758,20 @@ void Client::handle_heartbeat_ack(const std::string &response_body) {
 }
 
 tombstone_result Client::set_consent(bool granted) {
-    const bool was_granted = consent_.exchange(granted);
-    if (granted && initialized_) {
-        start_session_tracking();
-    } else if (!granted && was_granted) {
-        // Consent revoked: purge buffered breadcrumbs so the pre-revoke trail can't
-        // attach to a crash captured after consent is re-granted (GDPR scoping).
-        breadcrumbs_.clear();
+    const std::lock_guard<std::mutex> lock(consent_mutex_);
+    if (granted) {
+        if (initialized_) {
+            prepare_consented_capture();  // identity first: capture opens on the next line
+        }
+        consent_.store(true);
+        if (initialized_) {
+            on_consent_granted();
+        }
+        return TOMBSTONE_OK;
+    }
+    const bool was_granted = consent_.exchange(false);
+    if (was_granted && initialized_) {
+        purge_for_revoked_consent();
     }
     return TOMBSTONE_OK;
 }
@@ -798,9 +959,13 @@ tombstone_result Client::flush(int timeout_ms) {
 
 void Client::maybe_flush_batch(Batch &batch, const char *path,
                                std::chrono::steady_clock::time_point now, bool force,
-                               bool suppress_rtt) {
+                               SidecarKind kind) {
     if (!batch.has_items()) {
         return;  // cheap short-circuit: an empty idle loop allocates nothing (section 15)
+    }
+    const std::uint64_t epoch = capture_epoch();
+    if (!capture_allowed()) {
+        return;  // consent off: the batches were emptied by the revoke and must stay unsent
     }
     auto envelopes = batch.drain_envelopes_if_ready(now_iso8601_utc_ms(), now, force);
     if (envelopes.empty()) {
@@ -810,10 +975,16 @@ void Client::maybe_flush_batch(Batch &batch, const char *path,
         UploadJob job;
         job.url = endpoint_ + path;
         job.body = std::move(envelope);
-        job.durability = Durability::persist_on_failure;  // retried with backoff in-session
-        job.no_persist = true;  // a batch envelope is not a single-item sidecar
+        // Retried with backoff in-session, then — after the final failure or at
+        // shutdown — persisted whole under its own kind and replayed unchanged to
+        // the batch endpoint at a later launch (the server accepts a replayed
+        // envelope with its original sentAtIso).
+        job.durability = Durability::persist_on_failure;
+        job.kind = kind;
         job.sign_body = true;  // events:batch / metrics:batch are ingest POSTs — sign them (S3)
-        job.suppress_rtt = suppress_rtt;  // the metrics batch's own upload must not emit an rtt metric
+        // the metrics batch's own upload must not emit an rtt metric (it would recurse)
+        job.suppress_rtt = kind == SidecarKind::metric_batch;
+        job.consent_epoch = epoch;
         // Record the flush time for diagnostics (K3); steady-clock ns, 0 means "never".
         last_flush_steady_ns_.store(
             std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
@@ -826,8 +997,9 @@ void Client::drain_ready_batches() {
         return;  // v0.7 send gate: drains held until start_session (items keep buffering)
     }
     const auto now = std::chrono::steady_clock::now();
-    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/false, /*suppress_rtt=*/false);
-    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/false, /*suppress_rtt=*/true);
+    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/false, SidecarKind::event_batch);
+    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/false,
+                      SidecarKind::metric_batch);
 }
 
 void Client::flush_all_batches() {
@@ -838,8 +1010,9 @@ void Client::flush_all_batches() {
         return;
     }
     const auto now = std::chrono::steady_clock::now();
-    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/true, /*suppress_rtt=*/false);
-    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/true, /*suppress_rtt=*/true);
+    maybe_flush_batch(event_batch_, events_batch_path, now, /*force=*/true, SidecarKind::event_batch);
+    maybe_flush_batch(metric_batch_, metrics_batch_path, now, /*force=*/true,
+                      SidecarKind::metric_batch);
 }
 
 }  // namespace tombstone

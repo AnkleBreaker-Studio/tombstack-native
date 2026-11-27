@@ -40,6 +40,9 @@ public:
     std::size_t size() const;
     bool has_items() const;
 
+    /** Discard every buffered item (consent revoked: nothing buffered may be sent). */
+    void clear();
+
     /** Drain one bounded envelope, retaining any remaining items for the next drain. */
     std::optional<std::string> drain_if_ready(const std::string &sent_at_iso,
                                               std::chrono::steady_clock::time_point now,

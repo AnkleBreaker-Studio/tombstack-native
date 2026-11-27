@@ -5,9 +5,21 @@
  * Tombstone Native SDK — crash & telemetry client for any game engine.
  *
  * Pure C99 ABI: no C++ types cross this boundary and no call ever throws.
- * Every entry point returns a tombstone_result. The SDK is fail-silent by
- * design: internal failures degrade to result codes and (optionally) lines on
- * the user-provided log callback — never to console output or exceptions.
+ * Entry points return a tombstone_result, except the fire-and-forget ones
+ * declared void. The SDK is fail-silent by design: internal failures degrade to
+ * result codes and (optionally) lines on the user-provided log callback — never
+ * to console output or exceptions.
+ * No entry point is async-signal-safe: never call the SDK from a signal
+ * handler or an exception filter (see tombstone_report_crash).
+ *
+ * Server refusals: a 402 (the studio's spending cap) stops every request until
+ * the time the server names (re-checked at least hourly). A refused SDK token
+ * (401 invalid_api_key), a 403, a 404 (usually a wrong endpoint) or any other
+ * refusal that is not about the payload stops them until the next launch. Crash
+ * and bug reports are kept through either stop and sent afterwards; heartbeats,
+ * events and metrics captured during it are not. Only a report the server
+ * rejects as malformed or too large (400, 413, 422) is deleted, and one no
+ * launch delivered within 90 days.
  *
  * The SDK binds to one implicit process-wide client (tombstone_handle is the
  * opaque type reserved for a future multi-instance API). Double-init and
@@ -27,7 +39,10 @@
  * breadcrumbs 64 drop-oldest; events+metrics 128 combined drop-newest;
  * last-write-wins for identity/environment/metadata/consent) and are replayed
  * in order at init, AFTER the options are applied — an explicit pre-init Set*
- * beats the matching init option.
+ * beats the matching init option — and before anything is sent. A pre-init
+ * tombstone_set_consent() governs init itself: with 0, init sends nothing (no
+ * heartbeat, no report left pending by an earlier session) until consent is
+ * granted.
  */
 
 #include <stddef.h>
@@ -98,7 +113,17 @@ typedef struct tombstone_options {
     const char *token;
     /** Shipped with every payload (dashboard build filter). Required. */
     const char *build_version;
-    /** Writable directory for sidecars, session log, marker. NULL = platform default. */
+    /** Writable directory for sidecars, session log, marker, as a UTF-8 path
+     *  (on Windows too). NULL = a directory of this game's own under the platform default
+     *  (<base>/Tombstone/game-<16 hex>, derived from the token). A directory you
+     *  pass must belong to this game alone: one already used by a game with a
+     *  different token is never shared — the SDK then uses its own
+     *  game-<16 hex> subdirectory inside it. Required on Android, which has no
+     *  writable default (pass the app's files directory): without it the SDK
+     *  runs with no offline queue, session log or unclean-shutdown detection.
+     *  Several processes of one game may share it: the first one owns the
+     *  session marker, session log and crash dump and sends what earlier
+     *  sessions left pending; the others send only their own reports. */
     const char *data_dir;
     /** Deployment environment stamped on every payload (e.g. "production",
      *  "staging", "dev"; clamped to 64). NULL/empty = unset (the server
@@ -116,7 +141,9 @@ typedef struct tombstone_options {
     int enable_session_log;
     /** Nonzero (default) = detect a hard-killed previous session and report it. */
     int enable_unclean_shutdown_detection;
-    /** Nonzero (default) = capture starts immediately. 0 = wait for tombstone_set_consent(1). */
+    /** Nonzero (default) = capture starts immediately. 0 = wait for tombstone_set_consent(1):
+     *  until then nothing is captured or sent, the device identity is neither
+     *  read nor stored, and the native crash handler is not installed. */
     int consent_granted;
     /** Nonzero (default) = the SDK begins SENDING immediately at init (today's
      *  behavior). 0 = defer the first heartbeat and all event/metric batch
@@ -126,17 +153,23 @@ typedef struct tombstone_options {
      *  `dev_...` id, never anonymous). Crash and bug reports are never
      *  deferred. */
     int auto_start_session;
-    /** Nonzero (default) = emit a `tombstone.rtt_ms` metric after each successful ingest
-     *  POST (the upload round-trip time). 0 disables this self-telemetry. */
+    /** Nonzero (default) = emit a `tombstone.rtt_ms` metric with the round-trip time of a
+     *  successful ingest POST, sampled at most once every 10 minutes: each sample is a
+     *  metric row like the game's own (counted toward the plan's per-session allowance).
+     *  0 disables this self-telemetry. */
     int enable_rtt_metric;
     /** EXPERIMENTAL (v0.9), default 0 (OFF): install the in-process native crash
      *  handler. When on, the SDK catches fatal signals (SIGSEGV/ABRT/BUS/ILL/
      *  FPE/TRAP) with an async-signal-safe handler that writes a minimal dump
      *  ((module, build-id, offset) frames — NO on-device symbolication) and
      *  chains to any pre-existing handler (Unity / UGS); the dump is turned
-     *  into a crash report at the NEXT launch. POSIX/ELF only (Linux/Android)
-     *  — a no-op elsewhere. Off keeps the existing unclean-shutdown heuristic.
-     *  Enable only with the game engine's own crash handler installed FIRST so
+     *  into a crash report at the NEXT launch. A fault that pre-existing
+     *  handler resolves and returns from (a managed runtime turning a null
+     *  dereference into an exception, a page fixed in place) is resumed and
+     *  not reported; an alternate signal stack already registered on the
+     *  initializing thread is kept. POSIX/ELF only (Linux/Android) — a no-op
+     *  elsewhere. Off keeps the existing unclean-shutdown heuristic. Enable
+     *  only with the game engine's own crash handler installed FIRST so
      *  chaining is exercised. */
     int enable_native_crash_handler;
     /** Optional diagnostics sink (see tombstone_log_callback). NULL = silent. */
@@ -159,7 +192,10 @@ TOMBSTONE_API tombstone_result tombstone_init(const tombstone_options *options);
 /**
  * Clean shutdown: flushes the session log, persists undelivered durable
  * payloads as sidecars, deletes the unclean-shutdown marker, and joins the
- * background threads. Idempotent.
+ * background threads. Idempotent. Bounded even when the network does not
+ * answer: it gives in-flight deliveries about 2 s, then cancels the request
+ * still in progress (persisting what is durable), so it returns in about
+ * 3 s at most.
  */
 TOMBSTONE_API tombstone_result tombstone_shutdown(void);
 
@@ -167,11 +203,12 @@ TOMBSTONE_API tombstone_result tombstone_shutdown(void);
  * Attribute subsequent payloads to a player. Values are clamped to the wire
  * contract (user_id 128, steam_id 32 chars).
  *
- * Device identity (v0.8): the SDK never sends an anonymous user. At init it
- * acquires a persistent device-derived provisional id ("dev_" + 16 lowercase
- * hex — the machine id hashed salted with the game token; the raw machine id
- * never goes on the wire), and every payload carries it until you set a real
- * id. The first tombstone_set_user(real_id) after init upgrades the SAME
+ * Device identity (v0.8): the SDK never sends an anonymous user. Once consent
+ * is granted (at init by default) it acquires a persistent device-derived
+ * provisional id ("dev_" + 16 lowercase hex — the machine id hashed salted with
+ * the game token; the raw machine id never goes on the wire), and every payload
+ * carries it until you set a real id. Revoking consent deletes the stored id.
+ * The first tombstone_set_user(real_id) after init upgrades the SAME
  * session: the provisional id rides heartbeats (and crash/bug bodies) once as
  * `priorUserId` until a heartbeat is acked, so the server merges the session's
  * pre-login telemetry under the real player. Passing NULL/empty (logout)
@@ -204,6 +241,12 @@ TOMBSTONE_API tombstone_result tombstone_set_user_metadata(const char *const *ke
 /**
  * Toggle capture + upload (store policy / GDPR). While 0, nothing is recorded
  * or sent — breadcrumbs, heartbeats, events, and reports are all ignored.
+ * Revoking (1 -> 0) also discards everything captured but not yet delivered:
+ * queued and pending crash and bug reports (earlier sessions' included),
+ * buffered events and metrics, the breadcrumb trail, the session logs and the
+ * unclean-shutdown marker; nothing captured before the revoke is sent, even
+ * after a later re-grant. With consent off at init, reports left pending by
+ * earlier sessions stay on disk, unsent, until consent is granted.
  */
 TOMBSTONE_API tombstone_result tombstone_set_consent(int granted);
 
@@ -293,7 +336,8 @@ TOMBSTONE_API void tombstone_end_match(tombstone_handle *h);
  * it does NOT probe hardware (your engine already knows its GPU/CPU/screen).
  * Zero the struct; every field is optional and NULL/0 means "unset" (unset
  * fields are omitted from the wire body). Strings are clamped to the wire
- * contract maxima noted per field.
+ * contract maxima noted per field. A number outside the range noted per field
+ * (a unit mistake: RAM in KB, refresh rate in mHz) is omitted.
  */
 typedef struct tombstone_device_t {
     const char *model;             /* <=256 device/hardware model name */
@@ -301,16 +345,16 @@ typedef struct tombstone_device_t {
     const char *os;                /* <=256 full OS string with version */
     const char *os_family;         /* <=48  e.g. "Windows", "Linux", "macOS" */
     const char *cpu;               /* <=256 CPU model string */
-    int cpu_count;                 /* logical core count; 0 = unset */
-    int ram_mb;                    /* system memory in MB; 0 = unset */
+    int cpu_count;                 /* logical core count, 1..4096; 0 = unset */
+    int ram_mb;                    /* system memory in MB, 1..4194304; 0 = unset */
     const char *gpu;               /* <=256 GPU device name */
     const char *gpu_vendor;        /* <=256 GPU vendor name */
     const char *gpu_version;       /* <=256 driver/API version string */
     const char *gpu_api;           /* <=64  e.g. "Direct3D12", "Vulkan", "Metal" */
-    int vram_mb;                   /* video memory in MB; 0 = unset */
+    int vram_mb;                   /* video memory in MB, 1..4194304; 0 = unset */
     const char *screen;            /* <=32  "WxH", e.g. "2560x1440" */
-    double screen_dpi;             /* dots per inch; 0 = unset */
-    double refresh_rate;           /* display Hz; 0 = unset */
+    double screen_dpi;             /* dots per inch, up to 10000; 0 = unset */
+    double refresh_rate;           /* display Hz, up to 1000; 0 = unset */
     const char *orientation;       /* <=32  e.g. "Landscape", "Portrait" */
     int fullscreen;                /* nonzero = fullscreen; 0 = unset/omitted */
     const char *language;          /* <=48  system/user language tag */
@@ -339,8 +383,10 @@ TOMBSTONE_API tombstone_result tombstone_add_breadcrumb(tombstone_level level, c
  * Track a named analytics event with optional flat string attributes
  * (parallel keys[]/values[] arrays of length `count`; both may be NULL when
  * count is 0). Clamped to the wire contract: 32 attributes, 64-char keys,
- * 512-char values, 64-char name. Retried with backoff; persisted offline on
- * final failure.
+ * 512-char values, 64-char name. Batched, retried with backoff, and persisted
+ * offline after the final failure or at shutdown (pending/events-batch, and
+ * pending/metrics-batch for tombstone_track_metric), then sent at a later
+ * launch.
  */
 TOMBSTONE_API tombstone_result tombstone_track_event(const char *name,
                                                      const char *const *keys,
@@ -391,8 +437,18 @@ TOMBSTONE_API void tombstone_report_frame(double frame_ms);
  * is the one-line summary (clamped to 512; NULL becomes "Crash"); stack_trace
  * is optional (clamped to 8192). attach_log != 0 requests a session-log
  * upload slot. Write-ahead durable: persisted to disk before the first upload
- * attempt. Deduped per signature (<= 1 report/min; repeats return
+ * attempt, and kept through the server refusals listed at the top of this file.
+ * Deduped per signature (<= 1 report/min; repeats return
  * TOMBSTONE_SUPPRESSED and become a counter breadcrumb).
+ *
+ * NOT async-signal-safe: it allocates, takes locks and writes files on the
+ * caller's thread. Never call it from a signal handler, a SEH / vectored
+ * exception filter or any other crash-time context — a fault while the heap
+ * lock or an SDK lock is held would hang the game instead of reporting the
+ * crash. Call it from a normal thread (a script-VM error hook, an assert
+ * handler, an engine crash-reporter thread). A crash the process cannot
+ * survive is covered by the unclean-shutdown report at the next launch (and,
+ * on Linux/Android, by options.enable_native_crash_handler).
  */
 TOMBSTONE_API tombstone_result tombstone_report_crash(const char *signature,
                                                       const char *stack_hint,

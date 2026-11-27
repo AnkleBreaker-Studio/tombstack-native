@@ -44,3 +44,59 @@ jobs:
       - name: Run sidecar demo (offline path, Windows)
         if: runner.os == 'Windows'
         run: .\build\Release\tombstone_crash_sidecar_demo.exe
+
+  # Mobile: every source except the libcurl transport (platform-neutral, built above) and
+  # both test binaries, cross-compiled with warnings as errors. The tests also run on an
+  # iOS simulator; Android binaries are built and linked but not run.
+  cross:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: android-arm64-v8a, os: ubuntu-latest, abi: arm64-v8a }
+          - { name: android-armeabi-v7a, os: ubuntu-latest, abi: armeabi-v7a }
+          - { name: android-x86_64, os: ubuntu-latest, abi: x86_64 }
+          - { name: ios-arm64, os: macos-latest, sysroot: iphoneos }
+          - { name: ios-simulator, os: macos-latest, sysroot: iphonesimulator }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Android NDK)
+        if: matrix.abi
+        run: >
+          cmake -B build
+          -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake"
+          -DANDROID_ABI=${{ matrix.abi }}
+          -DANDROID_PLATFORM=android-24
+          -DCMAKE_BUILD_TYPE=Release
+          -DTOMBSTONE_BUILD_SDK=OFF
+
+      - name: Configure (iOS)
+        if: matrix.sysroot
+        run: >
+          cmake -B build
+          -DCMAKE_SYSTEM_NAME=iOS
+          -DCMAKE_OSX_SYSROOT=${{ matrix.sysroot }}
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          -DCMAKE_MACOSX_BUNDLE=OFF
+          -DCMAKE_BUILD_TYPE=Release
+          -DTOMBSTONE_BUILD_SDK=OFF
+
+      - name: Build (core + unit tests)
+        run: cmake --build build --parallel
+
+      - name: Run the unit tests on an iOS simulator
+        if: matrix.sysroot == 'iphonesimulator'
+        run: |
+          udid=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          print(next(d["udid"] for runtime, entries in devices.items() if "iOS" in runtime
+                     for d in entries if d["name"].startswith("iPhone")))')
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl spawn "$udid" "$PWD/build/tombstone_tests"
+          xcrun simctl spawn "$udid" "$PWD/build/tombstone_client_tests"

@@ -66,6 +66,14 @@ constexpr std::size_t device_language = 48;
 constexpr std::size_t device_engine = 48;
 constexpr std::size_t device_scripting_backend = 32;
 constexpr std::size_t device_platform = 48;
+// device numeric maxima (server deviceSchema): a value above one is a unit mistake
+// (RAM in KB, refresh rate in mHz) and is omitted — never sent, since an out-of-range
+// device field gets the whole crash or bug report rejected.
+constexpr int device_cpu_count = 4096;
+constexpr int device_memory_mb = 4'194'304;  // ramMB and vramMB
+constexpr double device_screen_dpi = 10'000.0;
+constexpr double device_refresh_rate = 1'000.0;
+constexpr int os_signal = 128;  // crash osSignal (a POSIX signal number)
 }  // namespace limits
 
 /**
@@ -81,16 +89,16 @@ struct DevicePayload {
     std::string os;                // empty -> omitted
     std::string os_family;         // empty -> omitted
     std::string cpu;               // empty -> omitted
-    int cpu_count{0};              // <= 0 -> omitted
-    int ram_mb{0};                 // <= 0 -> omitted
+    int cpu_count{0};              // <= 0 or > limits::device_cpu_count -> omitted
+    int ram_mb{0};                 // <= 0 or > limits::device_memory_mb -> omitted
     std::string gpu;               // empty -> omitted
     std::string gpu_vendor;        // empty -> omitted
     std::string gpu_version;       // empty -> omitted
     std::string gpu_api;           // empty -> omitted
-    int vram_mb{0};                // <= 0 -> omitted
+    int vram_mb{0};                // <= 0 or > limits::device_memory_mb -> omitted
     std::string screen;            // "WxH"; empty -> omitted
-    double screen_dpi{0.0};        // <= 0 / non-finite -> omitted
-    double refresh_rate{0.0};      // <= 0 / non-finite -> omitted
+    double screen_dpi{0.0};        // <= 0 / non-finite / > limits::device_screen_dpi -> omitted
+    double refresh_rate{0.0};      // <= 0 / non-finite / > limits::device_refresh_rate -> omitted
     std::string orientation;       // empty -> omitted
     bool fullscreen{false};        // false -> omitted (the server cleans 0/false anyway)
     std::string language;          // empty -> omitted
@@ -130,6 +138,10 @@ struct CrashPayload {
     std::string os;
     std::string arch;
     std::string signature;
+    /** Grouping key the server must use as is (it overrides its own stack-based grouping);
+     *  empty -> omitted. Sent for native-handler reports, whose module+offset frames the
+     *  server's stack grouping would otherwise collapse to one issue per module. */
+    std::string fingerprint;
     std::string stack_hint;
     std::string stack_trace;             // empty -> omitted
     std::vector<Breadcrumb> breadcrumbs; // empty -> omitted

@@ -1,11 +1,14 @@
 #ifndef TOMBSTONE_SRC_WORKER_H
 #define TOMBSTONE_SRC_WORKER_H
 
+#include "delivery_policy.h"
+#include "server_clock.h"
 #include "sidecar_queue.h"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -20,6 +23,7 @@ namespace tombstone {
 class SdkLog;
 class SessionLog;
 class Transport;
+struct HttpResponse;
 
 /** How hard the SDK fights to deliver a payload (mirrors the Unity SDK). */
 enum class Durability {
@@ -43,10 +47,15 @@ struct UploadJob {
     std::filesystem::path sidecar_path;  // non-empty when backed by a pending file
     bool request_log{false};             // body carries "log":true -> chase the presign on 2xx
     bool log_from_previous{false};       // a granted presign uploads previous-session.log
-    bool no_persist{false};              // batch envelopes: retry in-session, never sidecar'd
+    bool no_persist{false};              // control-plane POSTs: retry in-session, never sidecar'd
     bool parse_ack{false};               // heartbeat: hand the 2xx body to the ack handler
     bool sign_body{false};               // ingest POST: attach the X-Tombstack-Signature header (S3)
     bool suppress_rtt{false};            // metrics:batch: do NOT emit an rtt metric (would recurse)
+    /** Player data, governed by consent (everything except operator control-plane POSTs). */
+    bool consent_gated{true};
+    /** Worker::consent_epoch() read before the capture's consent check; a gated job from an
+     *  older epoch was captured before a revoke and is dropped instead of sent. */
+    std::uint64_t consent_epoch{0};
     int attempt{0};
     std::chrono::steady_clock::time_point not_before{};
 };
@@ -54,11 +63,25 @@ struct UploadJob {
 /**
  * Background delivery thread: drains a bounded queue (drop-oldest), uploads
  * with in-session exponential backoff (2s -> 32s, 5 attempts; a 429/503
- * Retry-After raises the wait, capped at 300s — see retry_after.h), classifies
- * results (2xx delivered / poison 4xx dropped / 429 + 5xx + network retried),
- * persists durable leftovers as sidecars, chases presigned session-log uploads,
- * and paces the rolling session-log flush. Owns no payload semantics — the
- * client builds bodies; the worker delivers them.
+ * Retry-After raises the wait, capped at 300s — see retry_after.h), settles
+ * results with delivery_policy.h, persists durable leftovers as sidecars,
+ * chases presigned session-log uploads, and paces the rolling session-log
+ * flush. Owns no payload semantics — the client builds bodies; the worker
+ * delivers them.
+ *
+ * Signing clock: every ingest response's `Date` teaches the ServerClock, and
+ * every signed request is stamped with its corrected time. A 401 whose body is
+ * not `invalid_api_key` is a signing-clock problem, so it is retried — at once
+ * when that very response corrected the clock — and never deleted.
+ *
+ * Stops: a 402 (spending cap) stops every request to the Tombstack API until
+ * the `resumesAt` it names (bounded, see delivery_policy.h); any other refusal
+ * of an ingest POST that is not about the payload (a refused SDK token, a 403,
+ * a 404...) stops them for the rest of the launch. During a stop, crash and bug
+ * reports and anything already on disk are kept — parked until a spending-cap
+ * stop ends, left on disk for a later launch otherwise — and everything else
+ * (heartbeats, new event and metric batches, pull-request calls) is dropped
+ * unsent. Log uploads to a slot granted earlier still go out.
  */
 class Worker {
 public:
@@ -83,10 +106,12 @@ public:
 
     void start();
 
-    /** Stop the thread; durable undelivered jobs are persisted as sidecars. */
+    /** Stop the thread, aborting any request in progress (Transport::abort_inflight);
+     *  durable undelivered jobs are persisted as sidecars. Returns promptly. */
     void stop();
 
-    /** Queue a job (thread-safe). Oldest entry is dropped when full. */
+    /** Queue a job (thread-safe). Oldest entry is dropped when full. During a stop
+     *  (see the class comment) a request to the Tombstack API is set aside instead. */
     void enqueue(UploadJob job);
 
     /** Install the batch-drain callback, invoked on each worker wake (off the
@@ -113,36 +138,84 @@ public:
     /** True when the queue drained (and nothing is in flight) within the timeout. */
     bool flush(std::chrono::milliseconds timeout);
 
-    /** Number of jobs waiting in the outbound queue (diagnostics, K3). Thread-safe. */
+    /** Number of jobs waiting to be sent, reports parked by a spending-cap stop
+     *  included (diagnostics, K3). Thread-safe. */
     std::size_t queued_count() const;
+
+    /** Consent epoch, incremented by every revoke_consent(). Thread-safe. */
+    std::uint64_t consent_epoch() const noexcept;
+
+    /** Tests only: the shortest spending-cap stop (60 s otherwise), so a test can see
+     *  one end. Call before start(). */
+    void set_min_spend_cap_stop(std::chrono::seconds floor) noexcept { min_spend_cap_stop_ = floor; }
+
+    /**
+     * Consent revoked: bump the epoch and drop every queued consent-gated job,
+     * deleting its sidecar file. A gated job captured before this call is then
+     * dropped wherever it is — queued, in flight (no retry, no follow-up upload),
+     * or enqueued later. Control-plane jobs (consent_gated = false) are kept.
+     */
+    void revoke_consent();
 
 private:
     void run();
     bool take_ready_job(UploadJob &out);
     std::chrono::steady_clock::time_point next_wakeup() const;
     void process(UploadJob &job);
-    void handle_post_result(UploadJob &job, bool transport_error, long status,
-                            const std::string &response_body, const std::string &retry_after);
+    /** Route one ingest POST result. `clock_moved`: this response's Date just
+     *  corrected the signing clock (a signature 401 is then retried at once). */
+    void handle_post_result(UploadJob &job, const HttpResponse &response, bool clock_moved);
     void schedule_log_upload(const UploadJob &job, const std::string &response_body);
     /** Re-queue with backoff — raised to a server Retry-After (seconds form, on
      *  429/503; capped at 300 s — see retry_after.h) when larger — or persist /
-     *  drop at max_attempts. `retry_after_seconds` < 0 means "no header". */
-    void retry_or_give_up(UploadJob &job, long retry_after_seconds = -1);
+     *  drop at max_attempts. `retry_after_seconds` < 0 means "no header";
+     *  `retry_now` skips the wait (the cause of the failure was just fixed). */
+    void retry_or_give_up(UploadJob &job, long retry_after_seconds = -1, bool retry_now = false);
     void persist_leftovers();
+    /** A gated job captured before the latest consent revoke. */
+    bool captured_before_revoke(const UploadJob &job) const noexcept;
+
+    /** File work decided under mutex_ and done after releasing it. */
+    struct SetAside {
+        std::vector<UploadJob> persist;              // kept, with no file yet
+        std::vector<std::filesystem::path> remove;   // captured before a consent revoke
+    };
+    /** 402: send nothing until the stop the response names ends. */
+    void stop_for_spend_cap(UploadJob &job, const HttpResponse &response);
+    /** An ingest POST refused for a reason other than its payload (401 invalid_api_key,
+     *  403, 404...): send nothing more this launch. */
+    void stop_for_launch(UploadJob &job, long status);
+    /** Under mutex_: a stop is in force at `now` for requests to the Tombstack API. */
+    bool sending_stopped_locked(std::chrono::steady_clock::time_point now) const noexcept;
+    /** Under mutex_: a job that will not be sent during the stop. A kept report is
+     *  parked (spending cap) or left to its file (stopped launch); the rest is dropped. */
+    void set_aside_locked(UploadJob &&job, SetAside &out);
+    /** Under mutex_: set aside every queued request to the Tombstack API. */
+    void set_aside_queue_locked(SetAside &out);
+    /** Under mutex_: the spending-cap stop is over, parked reports go back in the queue. */
+    void resume_parked_locked(std::chrono::steady_clock::time_point now);
+    void finish_set_aside(SetAside &work);
 
     Transport &transport_;
     SidecarQueue &sidecars_;
     SessionLog &session_log_;
     SdkLog &sdk_log_;
     const std::string token_;
+    ServerClock server_clock_;  // learned from ingest responses; read when signing
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<UploadJob> queue_;
+    // Stops (see the class comment), guarded by mutex_.
+    std::deque<UploadJob> parked_;  // kept reports waiting for a spending-cap stop to end
+    std::chrono::steady_clock::time_point stopped_until_{};  // end of a spending-cap stop
+    bool stopped_for_launch_{false};  // an ingest refusal not about the payload: until exit
+    std::chrono::seconds min_spend_cap_stop_{spend_cap_min_pause_seconds};  // see the setter
     bool running_{false};
     bool in_flight_{false};
     std::atomic<bool> previous_log_claimed_{false};
     std::atomic<bool> wake_requested_{false};
+    std::atomic<std::uint64_t> consent_epoch_{0};
     std::function<void()> batch_drainer_;  // set before start(); read on the worker thread
     std::function<void(const std::string &)> ack_handler_;  // set before start(); worker thread
     std::function<void(double)> rtt_handler_;  // set before start(); worker thread (K1)

@@ -7,6 +7,7 @@
 #include "breadcrumb_ring.h"
 #include "dedupe.h"
 #include "frame_stats.h"
+#include "instance_lock.h"
 #include "native_crash.h"
 #include "payloads.h"
 #include "sampler.h"
@@ -51,7 +52,12 @@ public:
     Client(Client &&) = delete;
     Client &operator=(Client &&) = delete;
 
+    /** Apply the options and set up storage; sends and starts nothing. */
     tombstone_result init(const tombstone_options &options);
+    /** Start delivery: the worker and heartbeat threads, then — with consent —
+     *  earlier sessions' pending reports and session tracking. Called once,
+     *  after the pre-init replay, before the client is published. */
+    void start();
 
     tombstone_result set_user(const char *user_id, const char *steam_id);
     tombstone_result set_consent(bool granted);
@@ -89,7 +95,9 @@ public:
 
 private:
     // --- lifecycle helpers (client.cpp) ---
-    void configure_storage();
+    /** Claim `requested` for this game (storage_owner.h) and set up every
+     *  disk-backed subsystem in the directory actually granted. */
+    void configure_storage(const std::filesystem::path &requested);
     /** v0.8: restore-or-derive the persistent device-derived provisional user
      *  id (the "dev_..." fallback identity). Runs once during init, right
      *  after configure_storage(). */
@@ -99,9 +107,24 @@ private:
     /** Best-effort write of `<data_dir>/identity` (a failure is logged only). */
     void persist_identity(const std::string &id);
     void drain_sidecars();
+    /** Before capture opens under consent: acquire the device identity (read the
+     *  machine id, derive, store) and arm the native crash handler. Nothing of the
+     *  kind happens while consent is off. Caller holds consent_mutex_ or is init. */
+    void prepare_consented_capture();
+    /** Consent revoked: delete the stored device identity and forget it in memory. */
+    void forget_device_identity();
+    /** Consent is (now) granted: send what earlier sessions left pending (once per
+     *  launch) and start dirty-session tracking. Caller holds consent_mutex_ or is
+     *  still single-threaded (init). */
+    void on_consent_granted();
+    /** Consent revoked: discard everything captured but not yet delivered — queued
+     *  and pending reports, buffered events and metrics, breadcrumbs, frame stats,
+     *  session logs and the session marker. Caller holds consent_mutex_. */
+    void purge_for_revoked_consent();
     void start_session_tracking();
     void report_unclean_shutdown(const SessionMarkerData &previous);
-    void report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump);
+    void report_native_crash(const SessionMarkerData &previous, const NativeCrashDump &dump,
+                             std::uint64_t consent_epoch);
     void heartbeat_loop();
     void stop_heartbeat();
     /** Worker-thread hook: parse a heartbeat ack and fulfil pull requests
@@ -110,18 +133,23 @@ private:
 
     // --- capture helpers (client_reports.cpp) ---
     bool capture_allowed() const noexcept { return initialized_ && consent_; }
+    /** The consent epoch to stamp on a payload. Read it BEFORE the consent check:
+     *  a revoke racing the capture then always invalidates the payload. */
+    std::uint64_t capture_epoch() const noexcept { return worker_ ? worker_->consent_epoch() : 0; }
     void record_breadcrumb(std::string_view level, std::string_view message);
     void enqueue_ingest(const char *path, std::string body, Durability durability,
-                        SidecarKind kind, bool request_log, bool log_from_previous);
+                        SidecarKind kind, bool request_log, bool log_from_previous,
+                        std::uint64_t consent_epoch);
     /** Worker-thread hook (K1): record the upload round-trip as `tombstone.rtt_ms`. */
     void record_rtt_metric(double ms);
 
     // --- batching (client.cpp): event/metric envelopes, sent off the worker thread ---
-    /** Drain one batch into the queue when a trigger fires (or `force`). `suppress_rtt`
-     *  marks the metrics batch so its own upload does not emit a recursive rtt metric. */
+    /** Drain one batch into the queue when a trigger fires (or `force`). `kind` is the
+     *  sidecar kind an undelivered envelope is persisted under; the metrics batch's own
+     *  upload never emits a (recursive) rtt metric. */
     void maybe_flush_batch(Batch &batch, const char *path,
                            std::chrono::steady_clock::time_point now, bool force,
-                           bool suppress_rtt);
+                           SidecarKind kind);
     /** Worker-thread hook: flush count/age-ready event + metric batches. */
     void drain_ready_batches();
     /** Force-drain both batches (explicit flush / quit / pre-crash). */
@@ -188,12 +216,21 @@ private:
     bool unclean_detection_enabled_{true};
     bool rtt_metric_enabled_{true};
     bool storage_available_{false};
+    // The process that holds the data directory's instance lock owns the session
+    // marker, session log, crash dump and the drain of earlier sessions' files.
+    InstanceLock instance_lock_;
+    bool owns_instance_{false};
 
     // K1 diagnostics: steady-clock ns of the last event/metric batch flush (0 = none).
     std::atomic<long long> last_flush_steady_ns_{0};
+    // tombstone.rtt_ms sampling: at most one sample per interval (steady-clock ns of the
+    // last one, 0 = none yet). Written from the worker thread only.
+    static constexpr std::chrono::minutes rtt_sample_interval{10};
+    std::atomic<long long> last_rtt_sample_ns_{0};
 
     // state
     std::atomic<bool> initialized_{false};
+    bool started_{false};  // the worker thread runs (set by start(); read by the destructor)
     std::atomic<bool> consent_{true};
     // v0.7 send gate (Unity 0.15 parity): until this one-way latch is set, the
     // heartbeat loop sends NOTHING and event/metric batch DRAINS are held
@@ -202,6 +239,11 @@ private:
     // options.auto_start_session at init; start_session() sets it forever.
     // Latch semantics live (and are unit-tested) in start_gate.h.
     StartGate start_gate_;
+    // Serializes consent transitions (grant / revoke sequences). Lock order:
+    // consent_mutex_ -> heartbeat_mutex_ -> the worker's queue mutex.
+    std::mutex consent_mutex_;
+    bool sidecars_drained_{false};  // earlier sessions' pending files sent (guarded by consent_mutex_)
+    bool identity_acquired_{false};  // device identity read + stored (guarded by consent_mutex_)
     std::mutex session_tracking_mutex_;
     bool session_tracking_started_{false};
     std::optional<SessionMarkerData> previous_marker_;

@@ -3,6 +3,133 @@
 All notable changes to the Tombstack Native SDK (the `tombstone_*` C ABI and
 the `tombstone` library name are stable — Tombstack is the product name).
 
+## [0.10.0] - 2026-11-27
+
+> **Upgrade note:** no API or ABI change, so a 0.9.x integration builds and runs unchanged.
+> What changes for a game that updates:
+> - With `data_dir` unset, the game keeps its files in a folder of its own
+>   (`Tombstone/game-<16 hex>` under the platform default). Reports a 0.9.x build left pending
+>   in the old shared folder are not read or sent; the player identifier is derived again from
+>   the same inputs, so it normally stays the same on the same machine.
+> - A spending-cap stop (402), a refused SDK token or a 404 (usually a wrong `endpoint`) no
+>   longer deletes crash and bug reports: they wait on disk and are sent once the server accepts
+>   again. Nothing else is sent meanwhile. Only a report the server rejects as malformed or too
+>   large (400, 413, 422) is deleted.
+> - Withdrawing consent discards everything not yet delivered, and with consent off at init
+>   nothing is read, stored or sent until it is granted.
+
+### Fixed
+
+- Games that leave `data_dir` unset no longer share one folder on a player's machine. Each game
+  now keeps its pending reports, logs, crash dump and player identifier in a folder of its own
+  under the platform default (`Tombstone/game-<16 hex>`), and only ever sends them with its own
+  token. A `data_dir` you pass that is already used under another SDK token is not shared
+  either: the SDK uses its own subfolder inside it. Files earlier versions left in the shared
+  folder are not read or sent. The player identifier is derived again for the new folder and
+  stays the same on the same machine; a game that changes its SDK token starts new ones.
+- Withdrawing consent (`tombstone_set_consent(0)`) now discards everything captured but not yet
+  delivered: queued and pending crash and bug reports (earlier sessions' included), buffered
+  events and metrics, breadcrumbs, the session logs and the unclean-shutdown marker. Nothing
+  captured before the withdrawal is sent afterwards, even if consent is granted again. Before,
+  buffered and queued data kept being sent after the withdrawal.
+- With consent off at init, reports left pending by earlier sessions now wait on disk until
+  consent is granted. Before, they were sent at init.
+- With consent off, the SDK no longer reads the machine identifier, stores the device-derived
+  player identifier or installs the native crash handler: this now happens once consent is
+  granted. Withdrawing consent deletes the stored identifier and stops crash dumps from being
+  written.
+- A `tombstone_set_consent(0)` made before `tombstone_init` now applies from the start of init.
+  Before, init still sent the previous session's crash report and started heartbeats before the
+  refusal took effect. Identity, environment and metadata set before init are likewise in place
+  before the first heartbeat.
+- Running two processes of the same game on one machine (a second instance, a launcher
+  relaunch, a client next to a dedicated server) no longer files a false "unclean shutdown"
+  for the first one, no longer sends its pending reports twice, and no longer leaves the first
+  one's real crash undetected after the second quits. The first process owns the session
+  tracking, session log and crash dump; the others send their own reports only.
+- Events and metrics that could not be delivered were lost when the player was offline for more
+  than about a minute or quit while offline, although the header said they were kept. They are
+  now kept on disk (`pending/events-batch`, `pending/metrics-batch`) and sent at a later launch,
+  with their original timestamps.
+- Android games are now reported as `android` and iOS games as `ios`, instead of `linux` and
+  `macos`, so the dashboard's OS filter shows them apart. On Android, where no default folder
+  is writable, the SDK now logs an error when `data_dir` is missing instead of silently running
+  without storage; the integration notes describe the Android `data_dir` and what to call when
+  a mobile app goes to the background.
+- On Windows, a player whose user folder name is outside the system's ANSI code page (for
+  example a Chinese name on a Western-language system), or a `data_dir` with non-ASCII
+  characters, left the SDK without any storage: no offline queue, no unclean-shutdown
+  detection and no session log. Paths are now read as Unicode, and `data_dir` is taken as
+  UTF-8 on every platform (a Windows path in the ANSI code page, accepted before, still
+  works).
+- Crash reports from the native crash handler now carry their precise grouping key, so crashes
+  at different places in the same library and build appear as separate issues instead of one.
+- A device number outside the server's range in `tombstone_set_device` (RAM in KB instead of
+  MB, a refresh rate in mHz, more than 4096 cores) made the server refuse every crash and bug
+  report from that build, which were then deleted. Such a number is now left out of the
+  report, which arrives. The accepted ranges are listed in the header.
+- The `tombstone.rtt_ms` self-metric (on by default) recorded one row per successful upload —
+  every heartbeat and every event batch — and on the free plan these rows used up most of the
+  per-session metric allowance, so the game's own events were refused. It is now sampled at
+  most once every 10 minutes. Set `enable_rtt_metric = 0` to turn it off.
+- The header and integration notes now state that no SDK call, `tombstone_report_crash`
+  included, may be made from a signal handler or an exception filter: it can hang the crashing
+  game instead of reporting the crash. Earlier notes suggested calling it from a top-level
+  exception filter or Unreal's crash path. Report errors the game survives from a normal
+  thread; a crash the process cannot survive is reported at the next launch.
+- With `enable_native_crash_handler` on, a game that shuts the SDK down and initializes it
+  again in the same process (an Android activity restart, an editor play session) no longer
+  loses the native crashes that follow: they are dumped to the current data directory again.
+- With `enable_native_crash_handler` on (Linux/Android), a fault that a handler installed
+  earlier resolves — a Mono or CoreCLR runtime turning a null dereference or a division by
+  zero into a managed exception, for example — no longer ends the game, and is not reported
+  as a crash. A fault nothing resolves still ends the process with its real signal and is
+  reported as before. An alternate signal stack the engine or runtime registered is now kept
+  instead of replaced.
+- Quitting while the network does not answer (captive portal, firewall, server not
+  responding) could freeze the game for up to about 30 s inside `tombstone_shutdown` or at
+  process exit. Shutdown now cancels the request in progress after its 2 s delivery window,
+  so it returns in about 3 s at most; what could not be delivered is kept for the next launch.
+  Connecting to the server also gives up after 5 s instead of the whole request timeout.
+- A device whose clock is more than five minutes off lost everything it sent: the server refused
+  the request and the SDK deleted the crash or bug report. The SDK now takes the server's time from
+  every response and uses it when signing, retrying at once with the corrected time, so these
+  devices report normally after their first request. A refusal of this kind never deletes a report.
+- Crash and bug reports whose text holds bytes that are not valid UTF-8 (a Windows path or a
+  system error message in a local code page, in the stack hint, a log line or a breadcrumb) were
+  refused by the server and then deleted. Each invalid sequence is now sent as the Unicode
+  replacement character, so these reports arrive. Reports of this kind that an earlier
+  version left waiting on disk are cleaned the same way when they are sent.
+- Pending reports are now written under a temporary name and renamed once complete, so a crash
+  or a full disk during the write no longer leaves a truncated report that the server refuses.
+  A pending report or batch that no launch could deliver within 90 days is deleted unsent, so a
+  report kept through refusals is not retried at every launch forever.
+- When a studio reaches the spending cap it set, the server refuses everything with 402 until a
+  time it names. The SDK deleted the crash or bug report that got this answer and kept sending
+  heartbeats, events and metrics into the refusal until the end of the period. It now sends
+  nothing until that time (checking again at least every hour, so raising the cap resumes a
+  running game within the hour), keeps crash and bug reports and sends them afterwards, and
+  drops the heartbeats, events and metrics captured during the stop, which the server would
+  not store.
+- A refused SDK token (401 `invalid_api_key`), a 403 or a 404 (usually a wrong `endpoint`)
+  made the SDK delete every crash and bug report it tried to send while it kept sending. Any
+  refusal of this kind now stops sending for the rest of the launch and keeps crash and bug
+  reports on disk for the next one, as the Unity and Godot SDKs and the CLI uploader do. Only a
+  payload the server rejects as malformed or too large (400, 413, 422) is still deleted.
+- On macOS, reading the host identifier at `tombstone_init` could wait without limit; it now
+  gives up after 2 s, and the player identifier then derives from a random source as on a
+  machine without one. On iOS the SDK reads no host identifier (an app may not): the
+  identifier derives from a random source kept in `data_dir`. The SDK also builds with
+  MinGW-w64.
+- The header said every entry point returns a `tombstone_result`; eight return `void`. It now
+  says so, and its top comment summarises how the SDK handles server refusals.
+
+### Added
+
+- CI cross-compiles the SDK code and unit tests for Android (arm64-v8a, armeabi-v7a, x86_64)
+  and iOS, and runs the unit tests on an iOS simulator. The new CMake option
+  `TOMBSTONE_BUILD_SDK=OFF` builds only the unit tests, without libcurl.
+
 ## [0.9.4] - 2026-09-18
 
 - Fix a copied range-loop variable in the new batch tests. GCC/Clang treat it as an error under the SDK's warnings-as-errors policy, so the default Linux/macOS build of 0.9.3 failed even though Windows compiled. Runtime transport behaviour is unchanged from 0.9.3.

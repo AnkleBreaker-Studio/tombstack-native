@@ -101,6 +101,25 @@ TEST_CASE("payloads", "crash clamps oversized strings to the schema maxima") {
     CHECK(json.find(std::string(8193, 't')) == std::string::npos);
 }
 
+TEST_CASE("payloads", "crash body stays well-formed UTF-8 when inputs carry legacy code-page bytes") {
+    // A Windows ANSI path in the hint and a Latin-1 log line in the breadcrumb trail: the body the
+    // SDK signs must be the exact bytes the server's UTF-8 decode reproduces.
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "windows";
+    payload.arch = "x64";
+    payload.signature = "sig";
+    payload.stack_hint = "Access violation in C:\\Users\\J\xE9r\xF4me\\game.dll";
+    payload.breadcrumbs = {Breadcrumb{"2026-01-02T03:04:00.000Z", "Error", "Acc\xE8s refus\xE9"}};
+    const std::string json = build_crash_json(payload);
+    CHECK(json.find("J\\ufffdr\\ufffdme") != std::string::npos);
+    CHECK(json.find("Acc\\ufffds refus\\ufffd") != std::string::npos);
+    for (const char c : json) {
+        CHECK(static_cast<unsigned char>(c) < 0x80U);  // every input byte above was ill-formed
+    }
+}
+
 TEST_CASE("payloads", "bug report is byte exact and omits empty category") {
     BugReportPayload payload;
     payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
@@ -572,6 +591,47 @@ TEST_CASE("payloads", "device object clamps oversized string dimensions") {
     CHECK(json.find(std::string(257, 'g')) == std::string::npos);
     CHECK(json.find('"' + std::string(48, 'o') + '"') != std::string::npos);  // osFamily clamped to 48
     CHECK(json.find(std::string(49, 'o')) == std::string::npos);
+}
+
+TEST_CASE("payloads", "device numbers outside the server's range are omitted, not sent") {
+    // Unit mistakes an integrator can make: RAM in KB, refresh rate in mHz, DPI x100.
+    DevicePayload device;
+    device.model = "Steam Deck";
+    device.ram_mb = 16'000'000;
+    device.vram_mb = 4'194'305;
+    device.cpu_count = 5000;
+    device.screen_dpi = 20'000.0;
+    device.refresh_rate = 59'940.0;
+    CrashPayload payload;
+    payload.occurred_at_iso = "2026-01-02T03:04:05.678Z";
+    payload.build_version = "1.0.0";
+    payload.os = "linux";
+    payload.arch = "x64";
+    payload.signature = "sig";
+    payload.stack_hint = "hint";
+    payload.device = device;
+    payload.os_signal = 999;  // a corrupt dump's signal number
+    const std::string json = build_crash_json(payload);
+    CHECK(json.find(R"("device":{"model":"Steam Deck"})") != std::string::npos);
+    CHECK(json.find("osSignal") == std::string::npos);
+
+    // The bounds themselves are accepted.
+    device.ram_mb = 4'194'304;
+    device.cpu_count = 4096;
+    device.screen_dpi = 10'000.0;
+    device.refresh_rate = 1000.0;
+    payload.device = device;
+    payload.os_signal = 11;
+    const std::string at_bounds = build_crash_json(payload);
+    CHECK(at_bounds.find(R"("cpuCount":4096,"ramMB":4194304)") != std::string::npos);
+    CHECK(at_bounds.find(R"("screenDpi":10000,"refreshRate":1000)") != std::string::npos);
+    CHECK(at_bounds.find(R"("osSignal":11)") != std::string::npos);
+
+    // A device whose only dimensions are out of range emits no device object at all.
+    DevicePayload only_bad;
+    only_bad.ram_mb = -1;
+    only_bad.refresh_rate = 59'940.0;
+    CHECK(!device_has_content(only_bad));
 }
 
 TEST_CASE("payloads", "event stamps correlation dimensions after attributes") {

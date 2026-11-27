@@ -2,7 +2,8 @@
 
 Standalone C/C++ crash & telemetry client for **any** game engine — Unreal,
 Godot, custom engines, tools, servers. Built from source with one CMake
-invocation on Windows, Linux, and macOS (CI-proven on all three), as a shared
+invocation on Windows, Linux, and macOS (CI-proven on all three; CI also
+cross-compiles the code and unit tests for Android and iOS), as a shared
 library — the build outputs `tombstone.dll` / `libtombstone.so` /
 `libtombstone.dylib` — or a static one, behind a pure C99 header, so anything
 that can call C can use it. Building really is one line:
@@ -30,7 +31,8 @@ opt.token = "tmb_...";            /* per-game SDK token */
 opt.build_version = "1.4.2";
 tombstone_init(&opt);
 tombstone_add_breadcrumb(TOMBSTONE_LEVEL_INFO, "boot complete");
-tombstone_report_crash(NULL, "Access violation in Renderer", stack_text, 1);
+/* From a normal thread — never from a signal handler or an exception filter. */
+tombstone_report_crash(NULL, "Script error in Renderer", stack_text, 1);
 ```
 
 Call `tombstone_flush(timeout_ms)` before exit and `tombstone_shutdown()` on
@@ -60,10 +62,11 @@ hostname)` sets fleet labels. `tombstone_set_environment("staging")` tags every 
 `tombstone_set_device(&specs)` attaches hardware specs (the SDK never probes — you hand it what
 your engine already knows) to crashes, bug reports, and the session's first heartbeat.
 
-Identity: the SDK **never sends an anonymous user** (v0.8). At init it acquires a persistent
-device-derived provisional id (`dev_` + 16 hex — the machine id hashed with FNV-1a-64, salted with
-your ingest token, so the raw machine id never goes on the wire and the same machine gets a
-different id per game; persisted to `<data_dir>/identity`). Every payload carries it until you call
+Identity: the SDK **never sends an anonymous user** (v0.8). Once consent is granted (at init by
+default) it acquires a persistent device-derived provisional id (`dev_` + 16 hex — the machine id
+hashed with FNV-1a-64, salted with your ingest token, so the raw machine id never goes on the wire
+and the same machine gets a different id per game; persisted to `<data_dir>/identity`, deleted
+when consent is withdrawn). Every payload carries it until you call
 `tombstone_set_user(real_id)`, which upgrades the **same session**: the provisional id rides once
 as `priorUserId` (heartbeats until acked; crash/bug reports while pending) so the server merges the
 pre-login telemetry under the real player. `tombstone_set_user(NULL, NULL)` (logout) reverts to the
@@ -87,7 +90,10 @@ diagnostics).
 - **Godot (GDExtension / C++ modules)**: link the shared library and call the
   C API directly; hook `OS::get_singleton()` logging.
 - **Custom engines**: link, init, pipe your logger into `tombstone_log_line`,
-  call `tombstone_report_crash` from your existing top-level exception filter.
+  call `tombstone_report_crash` where your engine learns about failures on a
+  normal thread (script errors, asserts). It is not async-signal-safe: never
+  call it from a signal handler or an exception filter — a crash the process
+  cannot survive is reported at the next launch (unclean-shutdown detection).
 - **C#/other runtimes**: standard P/Invoke / FFI against the C ABI.
 
 See [docs/INTEGRATION.md](docs/INTEGRATION.md) for per-engine notes and
@@ -96,18 +102,30 @@ See [docs/INTEGRATION.md](docs/INTEGRATION.md) for per-engine notes and
 ## Offline story: sidecars + uploader
 
 Crash and bug payloads are **write-ahead**: persisted to
-`<data_dir>/pending/{crashes,bug-reports,events}/*.json` *before* the first
-upload attempt. Each file is the raw ingest body — no envelope — which makes
-the queue compatible with the standalone uploader from the Tombstack monorepo:
+`<data_dir>/pending/{crashes,bug-reports}/*.json` *before* the first
+upload attempt. Event and metric batches that cannot be delivered (offline, or
+still queued at quit) are kept too, whole, under `pending/events-batch` and
+`pending/metrics-batch`, and sent at a later launch. Each crash or bug file is
+the raw ingest body — no envelope — which makes the queue compatible with the
+standalone uploader from the Tombstack monorepo:
 
 ```bash
 TOMBSTONE_BASE_URL=https://host TOMBSTONE_TOKEN=tmb_... \
     node tools/uploader/upload.mjs <data_dir>/pending/crashes
 ```
 
-The SDK also drains the queue itself on the next `tombstone_init`. Delivery
-classification matches the uploader: 2xx delete, 429/5xx/network keep,
-other 4xx drop (poison).
+The SDK also drains the queue itself on the next `tombstone_init`; a payload no
+launch delivered within 90 days is deleted unsent. How each server answer is
+handled:
+
+| Answer | What the SDK does |
+|---|---|
+| 2xx | Delivered: the pending file is deleted. |
+| 408, 429, 5xx, no answer | Kept and retried with backoff (a 429/503 `Retry-After` raises the wait). |
+| 401 about the request signature | Kept and retried: the SDK signs with the server's clock, learned from each response's `Date`. |
+| 402 `spend_cap_reached` (the studio's spending cap) | Nothing is sent until the `resumesAt` it names, re-checked at least hourly. Crash and bug reports are kept and sent afterwards; heartbeats, events and metrics from the stop are not kept. |
+| 400, 413, 422 | The server rejects the payload itself as malformed or too large: it is deleted. |
+| Any other refusal: 401 `invalid_api_key`, 403, 404 (usually a wrong `endpoint`)... | Nothing more is sent until the next launch. Crash and bug reports stay on disk. |
 
 ## Building
 
@@ -121,7 +139,8 @@ Requires CMake 3.18+ and a C++17 compiler. libcurl is found via `find_package(CU
 SHA-256-pinned curl 8.22.0 FetchContent fallback (Schannel on Windows, OpenSSL on Linux/macOS).
 Install the OpenSSL development package when using the fallback outside Windows.
 Node.js 22+ enables the additional local HTTP wire-contract test. Options: `TOMBSTONE_BUILD_STATIC`,
-`TOMBSTONE_BUILD_EXAMPLES`, `TOMBSTONE_BUILD_TESTS`.
+`TOMBSTONE_BUILD_EXAMPLES`, `TOMBSTONE_BUILD_TESTS`, and `TOMBSTONE_BUILD_SDK` (default ON; OFF
+builds only the unit tests, without libcurl, as CI does to cross-compile for Android and iOS).
 
 ## Scope & roadmap
 

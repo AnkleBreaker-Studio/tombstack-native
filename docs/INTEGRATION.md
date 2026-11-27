@@ -12,8 +12,12 @@ the same four steps:
 3. Pipe your engine's log output into `tombstone_log_line` (this feeds both
    the breadcrumb trail and the uploadable session log).
 4. Call `tombstone_report_crash` from wherever your engine already learns
-   about failures (top-level exception filter, script-VM error handler, assert
-   handler), `tombstone_flush` + `tombstone_shutdown` on clean exit.
+   about failures on a normal thread (script-VM error handler, assert handler,
+   managed exception hook), `tombstone_flush` + `tombstone_shutdown` on clean
+   exit. No SDK call is async-signal-safe: never call one from a signal
+   handler or an exception filter (`SetUnhandledExceptionFilter`, vectored
+   handlers) — it can hang the crashing game. A crash the process cannot
+   survive is reported at the next launch by the unclean-shutdown detection.
 
 Threading: every call is thread-safe; uploads happen on a background thread,
 never on the caller's. Nothing throws across the ABI. Calls made *before*
@@ -61,10 +65,13 @@ that interval's fps average / slow-frame % / hitch count / worst frame.
 - Log hook: register a `FOutputDevice` with `GLog->AddOutputDevice(...)` and
   forward each line to `tombstone_log_line` (map `ELogVerbosity` →
   `tombstone_level`).
-- Crashes: in `FCoreDelegates::OnHandleSystemError` or your custom
-  `ReportCrash` path, call `tombstone_report_crash(NULL, summary, callstack, 1)`
-  then `tombstone_flush(2000)`. (Unreal's own crash handler still runs;
-  Phase 2 minidump capture will integrate beneath it.)
+- Crashes: report errors your game survives (`ensure` failures, script
+  errors) with `tombstone_report_crash(NULL, summary, callstack, 1)` from the
+  game thread. Do not call the SDK from Unreal's crash path
+  (`FCoreDelegates::OnHandleSystemError`, a custom `ReportCrash`): it runs in a
+  crashing process and the SDK is not async-signal-safe. A fatal crash is
+  reported at the next launch by the unclean-shutdown detection. (Unreal's own
+  crash handler still runs; Phase 2 minidump capture will integrate beneath it.)
 - `data_dir`: `FPaths::ProjectSavedDir() / TEXT("Tombstack")`.
 
 ## Godot 4 (GDExtension)
@@ -80,12 +87,24 @@ that interval's fps average / slow-frame % / hitch count / worst frame.
 
 - See [`examples/minimal.c`](../examples/minimal.c).
 - If you already have a SEH filter (`SetUnhandledExceptionFilter`) or signal
-  handlers, keep them minimal: format what you safely can, write your own
-  notes, and call `tombstone_report_crash` from the *next* launch if your
-  process is too corrupted to upload — or rely on the SDK's unclean-shutdown
-  detection, which needs zero crash-time code.
+  handlers, keep them minimal and never call a `tombstone_*` function from
+  inside them: format what you safely can, write your own notes, and call
+  `tombstone_report_crash` from the *next* launch — or rely on the SDK's
+  unclean-shutdown detection, which needs zero crash-time code.
 - Dedicated servers: disable the session log (`enable_session_log = 0`) if
   you already ship logs elsewhere; heartbeats give you live session counts.
+
+## Mobile (Android / iOS)
+
+- Reports are tagged `android` / `ios`, so the dashboard's OS filter shows them
+  apart from desktop Linux and macOS.
+- Android: pass `data_dir` — the app's files directory (`Context.getFilesDir()`,
+  or `SDL_AndroidGetInternalStoragePath()` / your engine's equivalent). Android
+  has no writable default; without it the SDK runs with no offline queue,
+  session log or unclean-shutdown detection, and logs an error saying so.
+- When the app goes to the background, call `tombstone_flush(timeout_ms)`: the
+  OS may end a backgrounded app without notice. Such an ending is reported at
+  the next launch as an unclean shutdown, as is any other kill.
 
 ## C# / other managed runtimes (non-Unity)
 
@@ -103,12 +122,34 @@ official Tombstack Unity SDK instead — it has deeper engine hooks.
 
 If your platform requires opt-in telemetry, init with `consent_granted = 0`
 and call `tombstone_set_consent(1)` after the player accepts. While consent
-is off nothing is recorded or sent — calls return `TOMBSTONE_DISABLED`.
+is off nothing is recorded or sent — calls return `TOMBSTONE_DISABLED` — and
+reports left pending by earlier sessions wait on disk, unsent. When the player
+withdraws consent, `tombstone_set_consent(0)` discards everything not yet
+delivered (pending reports, buffered events and metrics, breadcrumbs, session
+logs); none of it is sent after a later re-grant.
+
+## When the server refuses
+
+- **402 `spend_cap_reached`**: your studio reached the monthly spending cap it
+  set on the Billing page. The SDK sends nothing until the `resumesAt` time the
+  server names (it checks again at least every hour, so raising the cap resumes
+  a running game within the hour). Crash and bug reports are kept and sent after
+  the stop; heartbeats, events and metrics captured during it are not kept.
+- **401 `invalid_api_key`, 403, 404 or any other refusal not about the payload**:
+  the SDK token was refused (revoked, rotated, or not an ingest token), or the
+  request did not reach Tombstack (a 404 usually means `endpoint` is wrong).
+  Nothing more is sent until the next launch; crash and bug reports stay on disk
+  and are tried again then, so a build with the right endpoint and the same token
+  sends them.
+- **400, 413, 422**: the server rejects that payload itself as malformed or too
+  large, and it is deleted.
+- Reports no launch could deliver within 90 days are deleted unsent.
 
 ## Shipping checklist
 
 - [ ] `build_version` matches the build you ship (dashboard filters by it).
-- [ ] `data_dir` points at a writable per-user location.
+- [ ] `data_dir` is left NULL (the SDK then uses a directory of this game's own)
+      or points at a writable per-user location used by this game only.
 - [ ] Engine log hooked into `tombstone_log_line`.
 - [ ] `tombstone_flush` + `tombstone_shutdown` on clean exit (otherwise the
       next launch reports an unclean shutdown — by design).

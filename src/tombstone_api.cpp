@@ -14,8 +14,8 @@ namespace {
 
 // Kept in lockstep with project(... VERSION ...) in CMakeLists.txt BY HAND, and that has failed TWICE:
 // the changelog records this string pinned at "0.1.0" once and stuck at "0.8.0" once. Deriving it from
-// PROJECT_VERSION is the real fix; until then, bump both or ship a third wrong version.
-constexpr const char *sdk_version = "0.9.4";
+// PROJECT_VERSION is the real fix; until then, the client_version test fails when the two differ.
+constexpr const char *sdk_version = "0.10.0";
 
 // The process-wide client. Entry points snapshot the shared_ptr under the
 // mutex and call outside it, so a long flush() neither blocks other calls nor
@@ -75,16 +75,15 @@ tombstone_result with_client_or_buffer(Action &&action, Buffer &&buffer) noexcep
  * Replay the pre-init store into the freshly initialized client — in order,
  * AFTER the options were applied, so an explicit pre-init Set* beats the
  * matching init option (Unity 0.9.8 clobber-fix parity). Last-write-wins state
- * first (consent / user / environment / metadata) so the replayed captures are
- * gated and stamped correctly; then breadcrumbs; then events + metrics in
- * their original combined order (replay-time timestamps — the pre-init window
- * is milliseconds in practice); finally the remembered start-session latch.
- * Every call is fail-soft: a rejected replay item must not fail init.
+ * first (user / environment / metadata) so the replayed captures are stamped
+ * correctly; then breadcrumbs; then events + metrics in their original combined
+ * order (replay-time timestamps — the pre-init window is milliseconds in
+ * practice); finally the remembered start-session latch. Consent is not
+ * replayed: tombstone_init folds it into the options, so it governs init itself.
+ * Nothing is sent yet: Client::start() runs after this. Every call is
+ * fail-soft: a rejected replay item must not fail init.
  */
 void replay_preinit(tombstone::Client &client, const tombstone::PreInitStore &store) {
-    if (store.has_consent()) {
-        (void)client.set_consent(store.consent());
-    }
     if (store.has_user()) {
         (void)client.set_user(store.user_id().c_str(), store.steam_id().c_str());
     }
@@ -165,14 +164,25 @@ tombstone_result tombstone_init(const tombstone_options *options) {
                 return TOMBSTONE_ERROR_ALREADY_INITIALIZED;
             }
             fresh = std::make_shared<tombstone::Client>();
-            const tombstone_result result = fresh->init(*options);
+            // A consent choice made before init is the INITIAL state, not a later
+            // revoke: it must govern init itself, before any sidecar is sent, any
+            // marker written or any heartbeat built.
+            tombstone_options effective = *options;
+            if (g_preinit.has_consent()) {
+                effective.consent_granted = g_preinit.consent() ? 1 : 0;
+            }
+            const tombstone_result result = fresh->init(effective);
             if (result != TOMBSTONE_OK) {
                 return result;  // fresh is destroyed; nothing was published
             }
             // v0.7: replay pre-init captures (in order, AFTER the options were
-            // applied) and clear the store, all before publishing — a concurrent
-            // capture call blocks on g_client_mutex and then lands on g_client.
+            // applied) and clear the store, then start sending, all before
+            // publishing — a concurrent capture call blocks on g_client_mutex and
+            // then lands on g_client.
             replay_preinit(*fresh, g_preinit);
+            fresh->start();
+            // Cleared only once the client really runs: if start() throws, a retried
+            // tombstone_init still sees the pre-init choices (consent above all).
             g_preinit.clear();
             g_client = std::move(fresh);
         }

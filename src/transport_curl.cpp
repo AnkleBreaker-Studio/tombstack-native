@@ -5,8 +5,8 @@
 
 #include <curl/curl.h>
 
+#include <atomic>
 #include <cstdint>
-#include <ctime>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -46,34 +46,55 @@ extern "C" size_t tombstone_curl_write(char *data, size_t size, size_t count, vo
     return total;
 }
 
-/** Minimal header capture: keep only the Retry-After value (case-insensitive
- *  name match; the pure parser handles OWS/CRLF trimming and the seconds form).
- *  Everything else is ignored — the SDK has no other header interest. */
+/** The two response headers the SDK reads; everything else is ignored. */
+struct HeaderCapture {
+    std::string retry_after;
+    std::string date;
+};
+
+/** Case-insensitive match of a raw header line against `lower_name` ("name:"). */
+bool header_named(std::string_view line, std::string_view lower_name) noexcept {
+    if (line.size() <= lower_name.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < lower_name.size(); ++i) {
+        const char c = line[i];
+        const char lower = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+        if (lower != lower_name[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Minimal header capture: keep the Retry-After and Date values (the pure
+ *  parsers handle OWS/CRLF trimming). An interim 100-continue response carries
+ *  neither, so the final response's values win. */
 extern "C" size_t tombstone_curl_header(char *data, size_t size, size_t count, void *out) {
-    auto *retry_after = static_cast<std::string *>(out);
+    auto *capture = static_cast<HeaderCapture *>(out);
     const size_t total = size * count;
     try {
         const std::string_view line{data, total};
-        constexpr std::string_view name{"retry-after:"};
-        if (line.size() > name.size()) {
-            bool matches = true;
-            for (std::size_t i = 0; i < name.size(); ++i) {
-                const char c = line[i];
-                const char lower =
-                    (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-                if (lower != name[i]) {
-                    matches = false;
-                    break;
-                }
-            }
-            if (matches) {
-                retry_after->assign(line.substr(name.size()));
-            }
+        constexpr std::string_view retry_after_name{"retry-after:"};
+        constexpr std::string_view date_name{"date:"};
+        if (header_named(line, retry_after_name)) {
+            capture->retry_after.assign(line.substr(retry_after_name.size()));
+        } else if (header_named(line, date_name)) {
+            capture->date.assign(line.substr(date_name.size()));
         }
     } catch (...) {
         return 0;  // signal failure to curl
     }
     return total;
+}
+
+/** Progress callback: libcurl calls it frequently while a transfer runs (about
+ *  once a second when idle, during connection setup too) and aborts the
+ *  transfer when it returns nonzero — how shutdown cancels an in-flight request. */
+extern "C" int tombstone_curl_progress(void *aborting, curl_off_t /*dltotal*/,
+                                       curl_off_t /*dlnow*/, curl_off_t /*ultotal*/,
+                                       curl_off_t /*ulnow*/) {
+    return static_cast<const std::atomic<bool> *>(aborting)->load() ? 1 : 0;
 }
 
 struct CurlHandleDeleter {
@@ -95,15 +116,24 @@ CurlSlist append_header(CurlSlist list, const char *header) {
     return list;
 }
 
-HttpResponse perform(CURL *handle, SdkLog &sdk_log) {
+HttpResponse perform(CURL *handle, SdkLog &sdk_log, std::atomic<bool> &aborting) {
     std::string body;
-    std::string retry_after;
+    HeaderCapture headers;
+    if (aborting.load()) {
+        return HttpResponse{};  // shutting down: fail at once (transport_error = true)
+    }
     curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, tombstone_curl_write);
     curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, tombstone_curl_header);
-    curl_easy_setopt(handle, CURLOPT_HEADERDATA, &retry_after);
+    curl_easy_setopt(handle, CURLOPT_HEADERDATA, &headers);
     curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L);
+    // A black-holed network must not hold a request (or the quit) for the whole
+    // transfer timeout: connection setup is bounded, and shutdown aborts the rest.
+    curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, Transport::connect_timeout_seconds);
+    curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(handle, CURLOPT_XFERINFOFUNCTION, tombstone_curl_progress);
+    curl_easy_setopt(handle, CURLOPT_XFERINFODATA, &aborting);
     // Assert TLS verification explicitly rather than inheriting the integrator's libcurl defaults:
     // this SDK ships a Bearer ingest token to a remote endpoint and must not accept an untrusted or
     // MITM'd cert even if the host build flipped the defaults. (libcurl defaults to these today.)
@@ -121,7 +151,8 @@ HttpResponse perform(CURL *handle, SdkLog &sdk_log) {
     response.transport_error = false;
     response.status = status;
     response.body = std::move(body);
-    response.retry_after = std::move(retry_after);
+    response.retry_after = std::move(headers.retry_after);
+    response.date = std::move(headers.date);
     return response;
 }
 
@@ -131,8 +162,11 @@ Transport::Transport(SdkLog &sdk_log) : sdk_log_(sdk_log) { curl_global_acquire(
 
 Transport::~Transport() { curl_global_release(); }
 
+void Transport::abort_inflight() noexcept { aborting_.store(true); }
+
 HttpResponse Transport::post_json(const std::string &url, const std::string &token,
-                                  const std::string &body, long timeout_seconds, bool sign) {
+                                  const std::string &body, long timeout_seconds, bool sign,
+                                  std::int64_t sign_unix_seconds) {
     try {
         const CurlHandle handle{curl_easy_init()};
         if (!handle) {
@@ -143,16 +177,16 @@ HttpResponse Transport::post_json(const std::string &url, const std::string &tok
         const std::string auth = "Authorization: Bearer " + token;
         headers = append_header(std::move(headers), auth.c_str());
 
-        // S3: sign ingest POSTs at send time over the raw body. Fail-soft — if the
-        // header cannot be built we send unsigned (the server accepts unsigned during
-        // the signing rollout). Computed here, on the worker thread, off the game path.
+        // S3: sign ingest POSTs at send time over the raw body, with the worker's
+        // server-corrected clock. Fail-soft — if the header cannot be built we send
+        // unsigned (the server accepts unsigned during the signing rollout).
+        // Computed here, on the worker thread, off the game path.
         std::string signature_header;
         if (sign) {
             try {
-                const auto unix_seconds = static_cast<std::int64_t>(std::time(nullptr));
                 signature_header =
                     "X-Tombstack-Signature: " +
-                    build_ingest_signature_header(token, body, unix_seconds);
+                    build_ingest_signature_header(token, body, sign_unix_seconds);
                 headers = append_header(std::move(headers), signature_header.c_str());
             } catch (...) {
                 sdk_log_.debug("request signing failed; sending unsigned");
@@ -166,7 +200,7 @@ HttpResponse Transport::post_json(const std::string &url, const std::string &tok
                          static_cast<long>(body.size()));
         curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, headers.get());
         curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT, timeout_seconds);
-        return perform(handle.get(), sdk_log_);
+        return perform(handle.get(), sdk_log_, aborting_);
     } catch (...) {
         return HttpResponse{};
     }
@@ -191,7 +225,7 @@ HttpResponse Transport::put_text(const std::string &url, const std::vector<char>
                          static_cast<long>(bytes.size()));
         curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, headers.get());
         curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT, timeout_seconds);
-        return perform(handle.get(), sdk_log_);
+        return perform(handle.get(), sdk_log_, aborting_);
     } catch (...) {
         return HttpResponse{};
     }
@@ -221,7 +255,7 @@ HttpResponse Transport::post_log(const std::string &url,
         curl_easy_setopt(handle.get(), CURLOPT_URL, url.c_str());
         curl_easy_setopt(handle.get(), CURLOPT_MIMEPOST, form.get());
         curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT, timeout_seconds);
-        return perform(handle.get(), sdk_log_);
+        return perform(handle.get(), sdk_log_, aborting_);
     } catch (...) {
         return HttpResponse{};
     }

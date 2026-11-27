@@ -52,9 +52,15 @@ public:
     /** Preserved previous-session log bytes. Empty when unavailable. */
     std::vector<char> read_previous();
 
+    /** Consent revoked: drop the buffered lines, empty `session.log` and delete
+     *  `previous-session.log`, so no line written before the revoke can ever be
+     *  uploaded. Later lines (after a re-grant) append as usual. */
+    void clear();
+
 private:
     std::string take_pending();
-    void write_chunk(const std::string &chunk);
+    /** Append `chunk` to the file; the caller holds file_mutex_. */
+    void write_chunk_locked(const std::string &chunk);
     void trim_from_front();
     std::vector<char> read_file(const std::filesystem::path &path);
 

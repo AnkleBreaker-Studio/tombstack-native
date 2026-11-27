@@ -13,11 +13,24 @@ size.
 - Since 0.9.3, signed ingest sends `X-Tombstack-Signature: t=<unixSec>,v1=<hex>`,
   with HMAC-SHA256(token, `<t>.<rawBody>`). Earlier native releases used the obsolete
   `X-Tombstone-Signature` name, which the current server did not verify.
+- `t` is the server's time as learned from the `Date` header of every ingest
+  response (the server refuses a `t` more than 300 s from its own clock), so a
+  device whose clock is wrong still signs correctly after its first response.
 - Responses use `{ "success": true, "data": ... }` /
   `{ "success": false, "error": ... }`.
-- Status classification (matches `tools/lib/upload-classify.mjs`):
+- Status classification:
   **2xx** delivered → delete sidecar · **408/429/5xx/network** transient →
-  retry with backoff, keep sidecar · **other 4xx** poison → drop.
+  retry with backoff, keep sidecar · **401 `invalid_signature`** (or a 401
+  without a code) → retry, at once when the response's `Date` corrected the
+  clock; never deleted · **402** (`spend_cap_reached`, any route) → send nothing
+  until the body's `resumesAt`, bounded to [60 s, 1 h] (15 min without one);
+  crash and bug reports and pending files are kept and sent afterwards,
+  heartbeats and new event/metric batches are dropped unsent · **400/413/422**
+  (malformed or too large) poison → drop · **any other refusal of an ingest POST**
+  (401 `invalid_api_key`, 403, 404, a redirect...) → send nothing more this
+  launch; crash and bug reports and pending files stay on disk · a pull-request
+  call refused with anything but 402 drops only that call.
+- A pending file no launch delivered within 90 days is deleted unsent.
 
 ## Common fields
 
@@ -25,7 +38,7 @@ size.
 |---|---|
 | `occurredAtIso` | ISO-8601 UTC with milliseconds: `2026-06-10T12:00:00.000Z` |
 | `buildVersion` | 1..64 chars |
-| `os` | `windows` \| `macos` \| `linux` \| `other` (compile-time detected) |
+| `os` | `windows` \| `macos` \| `linux` \| `android` \| `ios` \| `other` (compile-time detected) |
 | `arch` | `x64` \| `arm64` \| `x86` \| `other` |
 | `userId` | ≤128 chars; v0.8: never unset — the device-derived provisional `dev_...` id until `tombstone_set_user` |
 | `priorUserId` | ≤128 chars, heartbeat/crash/bug only; the provisional id carried once during a same-session identity upgrade (until a heartbeat 2xx), **omitted** otherwise |
@@ -64,6 +77,11 @@ enum would fail validation).
 - The synthetic unclean-shutdown report uses the constant signature
   `unclean-shutdown` and the previous session's buildVersion/os/arch from the
   `session.lock` marker.
+- A native-crash-handler report (`crashType` `native_crash`/`signal`, plus
+  `osSignal`) also sends its signature as `fingerprint` (≤128), the grouping
+  key the server uses as is: its `stackTrace` frames are unsymbolicated
+  `module+0x<offset> <build-id>` lines, whose offsets server-side stack
+  grouping would drop.
 
 ## POST /api/v1/ingest/bug-reports → `201 { bugId, logUpload? }`
 
@@ -147,3 +165,10 @@ isolated so their rejection cannot discard valid neighbours.
 file content is the raw ingest body above, no wrapper. Drained on the next
 `tombstone_init`, or by `tools/uploader/upload.mjs` pointed at the `crashes`
 subdirectory.
+
+`<data_dir>/pending/{events-batch,metrics-batch}/<ms-epoch>-<8hex>.json` hold
+whole `{sentAtIso, items}` envelopes that could not be delivered (after the last
+in-session retry, or still queued at shutdown). The SDK replays each unchanged —
+original `sentAtIso` included, which the server never moves for a replay — to
+`events:batch` / `metrics:batch` at a later launch. `pending/events` (single
+events) is only drained, for files an older SDK left there.

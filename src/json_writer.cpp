@@ -6,10 +6,85 @@
 
 namespace tombstone {
 
+namespace {
+
+/** Bounds of the byte that may follow `lead` as the first continuation byte. */
+struct SecondByteRange {
+    unsigned char low;
+    unsigned char high;
+};
+
+/**
+ * Length of the well-formed UTF-8 sequence starting at value[pos], or 0 when it
+ * is ill-formed. `consumed` receives the length of the maximal subpart to
+ * replace with ONE U+FFFD (the WHATWG decoder rule the server's `req.text()`
+ * applies), always at least 1 so the caller makes progress.
+ */
+std::size_t utf8_sequence_length(std::string_view value, std::size_t pos,
+                                 std::size_t &consumed) noexcept {
+    const auto lead = static_cast<unsigned char>(value[pos]);
+    std::size_t length = 0;
+    SecondByteRange second{0x80U, 0xBFU};
+    if (lead >= 0xC2U && lead <= 0xDFU) {
+        length = 2;
+    } else if (lead >= 0xE0U && lead <= 0xEFU) {
+        length = 3;
+        if (lead == 0xE0U) {
+            second = {0xA0U, 0xBFU};  // no overlong forms
+        } else if (lead == 0xEDU) {
+            second = {0x80U, 0x9FU};  // no UTF-16 surrogates
+        }
+    } else if (lead >= 0xF0U && lead <= 0xF4U) {
+        length = 4;
+        if (lead == 0xF0U) {
+            second = {0x90U, 0xBFU};  // no overlong forms
+        } else if (lead == 0xF4U) {
+            second = {0x80U, 0x8FU};  // nothing above U+10FFFF
+        }
+    } else {
+        consumed = 1;  // a stray continuation byte, C0/C1, or F5..FF
+        return 0;
+    }
+    std::size_t i = 1;
+    for (; i < length && pos + i < value.size(); ++i) {
+        const auto next = static_cast<unsigned char>(value[pos + i]);
+        const unsigned char low = (i == 1) ? second.low : 0x80U;
+        const unsigned char high = (i == 1) ? second.high : 0xBFU;
+        if (next < low || next > high) {
+            break;
+        }
+    }
+    if (i == length) {
+        consumed = length;
+        return length;
+    }
+    consumed = i;  // the lead plus the continuation bytes that were valid so far
+    return 0;
+}
+
+}  // namespace
+
 std::string json_escape(std::string_view value) {
     std::string out;
     out.reserve(value.size() + 8);
-    for (const char c : value) {
+    for (std::size_t pos = 0; pos < value.size();) {
+        const char c = value[pos];
+        if (static_cast<unsigned char>(c) >= 0x80U) {
+            // Only well-formed UTF-8 reaches the wire. The server decodes the
+            // body as UTF-8 before it checks the request signature, so a stray
+            // byte (a legacy code-page path or message) would be replaced there
+            // and the signature over the original bytes would no longer match.
+            std::size_t consumed = 1;
+            const std::size_t length = utf8_sequence_length(value, pos, consumed);
+            if (length > 0) {
+                out.append(value.data() + pos, length);
+            } else {
+                out += "\\ufffd";
+            }
+            pos += consumed;
+            continue;
+        }
+        ++pos;
         switch (c) {
         case '"':
             out += "\\\"";
@@ -43,6 +118,27 @@ std::string json_escape(std::string_view value) {
             }
             break;
         }
+    }
+    return out;
+}
+
+std::string utf8_sanitized(std::string_view value) {
+    std::string out;
+    out.reserve(value.size());
+    for (std::size_t pos = 0; pos < value.size();) {
+        if (static_cast<unsigned char>(value[pos]) < 0x80U) {
+            out += value[pos];
+            ++pos;
+            continue;
+        }
+        std::size_t consumed = 1;
+        const std::size_t length = utf8_sequence_length(value, pos, consumed);
+        if (length > 0) {
+            out.append(value.data() + pos, length);
+        } else {
+            out += "\xEF\xBF\xBD";
+        }
+        pos += consumed;
     }
     return out;
 }

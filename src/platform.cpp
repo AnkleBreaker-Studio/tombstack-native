@@ -7,7 +7,11 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#ifndef RRF_SUBKEY_WOW6464KEY
+#define RRF_SUBKEY_WOW6464KEY 0x00010000  // winreg.h value; missing from MinGW-w64 headers
+#endif
 #elif defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <ctime>
 #include <unistd.h>
 #include <uuid/uuid.h>
@@ -20,8 +24,18 @@ namespace tombstone {
 const char *os_name() noexcept {
 #if defined(_WIN32)
     return "windows";
+#elif defined(__ANDROID__)
+    return "android";  // checked before __linux__, which Android also defines
 #elif defined(__APPLE__)
+#if defined(TARGET_OS_MACCATALYST) && TARGET_OS_MACCATALYST
+    return "macos";  // an iPad app running on a Mac
+#elif defined(TARGET_OS_IOS) && TARGET_OS_IOS
+    return "ios";
+#elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    return "other";  // tvOS / watchOS / visionOS: not in the server's OS enum
+#else
     return "macos";
+#endif
 #elif defined(__linux__)
     return "linux";
 #else
@@ -43,19 +57,43 @@ const char *arch_name() noexcept {
 
 namespace {
 
+#if defined(_WIN32)
+/** An environment variable as a path, read with the wide API: getenv() converts
+ *  to the ANSI code page, which turns a user profile name outside it into '?'
+ *  and leaves an unusable directory. Empty when unset. */
+std::filesystem::path wide_env_path(const wchar_t *name) {
+    const DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
+    if (needed == 0) {
+        return {};
+    }
+    std::wstring value(needed, L'\0');
+    const DWORD written = GetEnvironmentVariableW(name, value.data(), needed);
+    if (written == 0 || written >= needed) {
+        return {};
+    }
+    value.resize(written);
+    return std::filesystem::path{value};
+}
+#elif !defined(__ANDROID__)
 /** getenv as a string; empty when unset (read-only env access, never freed). */
 std::string env_or_empty(const char *name) {
     const char *value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
     return value != nullptr ? std::string{value} : std::string{};
 }
+#endif
 
 }  // namespace
 
-std::filesystem::path default_data_dir() {
+std::filesystem::path default_data_root() {
+#if defined(__ANDROID__)
+    // No HOME or XDG directory an app can write to, and the working directory is
+    // "/": there is no usable default. The game must pass options.data_dir.
+    return {};
+#else
 #if defined(_WIN32)
-    const std::string base = env_or_empty("LOCALAPPDATA");
+    const std::filesystem::path base = wide_env_path(L"LOCALAPPDATA");
     if (!base.empty()) {
-        return std::filesystem::path{base} / "Tombstone";
+        return base / "Tombstone";
     }
 #elif defined(__APPLE__)
     const std::string home = env_or_empty("HOME");
@@ -73,6 +111,7 @@ std::filesystem::path default_data_dir() {
     }
 #endif
     return std::filesystem::path{"tombstone-data"};
+#endif
 }
 
 std::string read_machine_id() {
@@ -89,11 +128,16 @@ std::string read_machine_id() {
         return {};
     }
     return std::string{value};  // RegGetValue NUL-terminates REG_SZ reads
+#elif defined(__APPLE__) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    // iOS and its family offer an app no host identifier: the SDK derives the id
+    // from a random source instead, kept in data_dir like any other.
+    return {};
 #elif defined(__APPLE__)
     // gethostuuid is libc-only (no IOKit link): the same IOPlatformUUID-backed
-    // host UUID, without pulling a framework into the build.
+    // host UUID, without pulling a framework into the build. A zero timeout would
+    // mean "wait indefinitely", inside tombstone_init: bound it.
     uuid_t uuid = {};
-    const struct timespec timeout = {0, 0};
+    const struct timespec timeout = {2, 0};
     if (gethostuuid(uuid, &timeout) != 0) {
         return {};
     }

@@ -57,16 +57,24 @@ void correlation_fields(JsonWriter &json, const std::string &role, const std::st
     optional_field(json, "sessionId", session_id, limits::session_id);
 }
 
-/** Emit an integer device dimension only when it carries information (> 0). */
-void optional_int_field(JsonWriter &json, std::string_view name, int value) {
-    if (value > 0) {
+/** An integer dimension worth sending: set (> 0) and within the server's bound. */
+constexpr bool int_in_range(int value, int max) noexcept { return value > 0 && value <= max; }
+
+/** A numeric dimension worth sending: finite, set (> 0) and within the server's bound. */
+bool number_in_range(double value, double max) noexcept {
+    return std::isfinite(value) && value > 0.0 && value <= max;
+}
+
+/** Emit an integer dimension only when it carries information and the server accepts it. */
+void optional_int_field(JsonWriter &json, std::string_view name, int value, int max) {
+    if (int_in_range(value, max)) {
         json.int_field(name, static_cast<long long>(value));
     }
 }
 
-/** Emit a numeric device dimension only when finite and > 0 (0 means "unset"). */
-void optional_number_field(JsonWriter &json, std::string_view name, double value) {
-    if (std::isfinite(value) && value > 0.0) {
+/** Emit a numeric dimension only when it carries information and the server accepts it. */
+void optional_number_field(JsonWriter &json, std::string_view name, double value, double max) {
+    if (number_in_range(value, max)) {
         json.number_field(name, value);
     }
 }
@@ -86,16 +94,16 @@ void device_object(JsonWriter &json, const DevicePayload &device) {
     optional_field(json, "os", device.os, limits::device_os);
     optional_field(json, "osFamily", device.os_family, limits::device_os_family);
     optional_field(json, "cpu", device.cpu, limits::device_cpu);
-    optional_int_field(json, "cpuCount", device.cpu_count);
-    optional_int_field(json, "ramMB", device.ram_mb);
+    optional_int_field(json, "cpuCount", device.cpu_count, limits::device_cpu_count);
+    optional_int_field(json, "ramMB", device.ram_mb, limits::device_memory_mb);
     optional_field(json, "gpu", device.gpu, limits::device_gpu);
     optional_field(json, "gpuVendor", device.gpu_vendor, limits::device_gpu_vendor);
     optional_field(json, "gpuVersion", device.gpu_version, limits::device_gpu_version);
     optional_field(json, "gpuApi", device.gpu_api, limits::device_gpu_api);
-    optional_int_field(json, "vramMB", device.vram_mb);
+    optional_int_field(json, "vramMB", device.vram_mb, limits::device_memory_mb);
     optional_field(json, "screen", device.screen, limits::device_screen);
-    optional_number_field(json, "screenDpi", device.screen_dpi);
-    optional_number_field(json, "refreshRate", device.refresh_rate);
+    optional_number_field(json, "screenDpi", device.screen_dpi, limits::device_screen_dpi);
+    optional_number_field(json, "refreshRate", device.refresh_rate, limits::device_refresh_rate);
     optional_field(json, "orientation", device.orientation, limits::device_orientation);
     if (device.fullscreen) {
         json.bool_field("fullscreen", true);
@@ -158,12 +166,14 @@ std::string build_user_metadata_json(const UserMetadataEntries &entries) {
 
 bool device_has_content(const DevicePayload &device) noexcept {
     return !device.model.empty() || !device.type.empty() || !device.os.empty() ||
-           !device.os_family.empty() || !device.cpu.empty() || device.cpu_count > 0 ||
-           device.ram_mb > 0 || !device.gpu.empty() || !device.gpu_vendor.empty() ||
-           !device.gpu_version.empty() || !device.gpu_api.empty() || device.vram_mb > 0 ||
+           !device.os_family.empty() || !device.cpu.empty() ||
+           int_in_range(device.cpu_count, limits::device_cpu_count) ||
+           int_in_range(device.ram_mb, limits::device_memory_mb) || !device.gpu.empty() ||
+           !device.gpu_vendor.empty() || !device.gpu_version.empty() ||
+           !device.gpu_api.empty() || int_in_range(device.vram_mb, limits::device_memory_mb) ||
            !device.screen.empty() ||
-           (std::isfinite(device.screen_dpi) && device.screen_dpi > 0.0) ||
-           (std::isfinite(device.refresh_rate) && device.refresh_rate > 0.0) ||
+           number_in_range(device.screen_dpi, limits::device_screen_dpi) ||
+           number_in_range(device.refresh_rate, limits::device_refresh_rate) ||
            !device.orientation.empty() || device.fullscreen || !device.language.empty() ||
            !device.engine.empty() || !device.scripting_backend.empty() ||
            !device.platform.empty();
@@ -174,6 +184,7 @@ std::string build_crash_json(const CrashPayload &payload) {
     json.begin_object();
     common_context(json, payload.occurred_at_iso, payload.build_version, payload.os, payload.arch);
     clamped_field(json, "signature", payload.signature, limits::signature);
+    optional_field(json, "fingerprint", payload.fingerprint, limits::signature);
     clamped_field(json, "stackHint", payload.stack_hint, limits::stack_hint);
     optional_field(json, "stackTrace", payload.stack_trace, limits::stack_trace);
     breadcrumbs_field(json, payload.breadcrumbs);
@@ -189,7 +200,7 @@ std::string build_crash_json(const CrashPayload &payload) {
     // v0.9 native crash enrichment: coarse cause + POSIX signal number (both
     // omitted when unset — an ordinary managed crash carries neither).
     optional_field(json, "crashType", payload.crash_type, limits::signature);
-    optional_int_field(json, "osSignal", payload.os_signal);
+    optional_int_field(json, "osSignal", payload.os_signal, limits::os_signal);
     json.end_object();
     return json.str();
 }

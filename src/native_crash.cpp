@@ -11,8 +11,9 @@
 
 #include "sdk_log.h"
 
-#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,8 @@
 #include <fcntl.h>
 #include <link.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
 #include <atomic>
@@ -82,6 +85,44 @@ std::string signal_name(int signal_no) {
             return "signal " + std::string(buf, n);
         }
     }
+}
+
+ChainVerdict verdict_after_chain(const ChainFacts &facts) noexcept {
+    if (facts.signal_no == 6) {
+        // SIGABRT (literal POSIX number): abort() terminates the process once the
+        // handler returns, whatever the handler did — keep the dump.
+        return ChainVerdict::die;
+    }
+    if (facts.context_changed) {
+        // A runtime moved execution on (Mono / CoreCLR managed exception): handled,
+        // even if it also re-registered its own disposition.
+        return ChainVerdict::resume;
+    }
+    if (!facts.still_registered) {
+        // The previous handler replaced our disposition (typically SIG_DFL, so the
+        // re-executed fault ends the process): keep the dump and let that act.
+        return ChainVerdict::defer;
+    }
+    if (facts.resent) {
+        // It re-sent the signal to end the process by it: keep the dump and die.
+        return ChainVerdict::die;
+    }
+    // Returned with the context unchanged: fixed in place (a GC unprotecting a page)
+    // and the instruction is retried — unless the same fault keeps coming back.
+    return facts.unchanged_repeats >= kMaxUnchangedRepeats ? ChainVerdict::die
+                                                           : ChainVerdict::resume;
+}
+
+unsigned note_unchanged_fault(RepeatTracker &tracker, int signal_no, std::uint64_t pc,
+                              std::uint64_t fault_addr, std::int64_t entered_ns) noexcept {
+    const bool same_fault = tracker.count > 0 && tracker.signal_no == signal_no &&
+                            tracker.pc == pc && tracker.fault_addr == fault_addr &&
+                            entered_ns - tracker.last_exit_ns <= kRepeatWindowNs;
+    tracker.count = same_fault ? tracker.count + 1 : 1;
+    tracker.signal_no = signal_no;
+    tracker.pc = pc;
+    tracker.fault_addr = fault_addr;
+    return tracker.count;
 }
 
 #if TOMBSTONE_NATIVE_CRASH_POSIX
@@ -137,6 +178,41 @@ HandlerState g_state;
 // async-signal-safe AND atomic across threads (a plain `volatile sig_atomic_t` read-then-write is
 // not a CAS — two threads faulting at once could both pass and corrupt the single dump fd).
 std::atomic_flag g_in_handler = ATOMIC_FLAG_INIT;
+
+// Consent gate for dump writing (set_capture_enabled). Read in the handler: a lock-free atomic
+// load is async-signal-safe.
+std::atomic<bool> g_capture_enabled{false};
+
+// Faults a previous handler returned from without changing the context. Only touched by the
+// thread that holds g_in_handler, so plain fields are enough.
+RepeatTracker g_repeats;
+
+// Identity (device, inode) of the dump file behind g_state.dump_fd, recorded at install. The
+// handler writes to or truncates the descriptor only while it still refers to that file: a host
+// that closed it and reused the number must never get an unrelated file overwritten.
+std::atomic<std::uintptr_t> g_dump_dev{0};
+std::atomic<std::uintptr_t> g_dump_ino{0};
+static_assert(std::atomic<std::uintptr_t>::is_always_lock_free,
+              "the crash handler reads the dump identity; it must be lock-free");
+
+/** Record which file `fd` refers to (normal context, at install). */
+void remember_dump_identity(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) == 0) {
+        g_dump_dev.store(static_cast<std::uintptr_t>(st.st_dev), std::memory_order_relaxed);
+        g_dump_ino.store(static_cast<std::uintptr_t>(st.st_ino), std::memory_order_relaxed);
+    }
+}
+
+/** True while `fd` still refers to the dump file opened at install (fstat is signal-safe). */
+bool dump_fd_is_ours(int fd) {
+    struct stat st;
+    return fd >= 0 && fstat(fd, &st) == 0 &&
+           static_cast<std::uintptr_t>(st.st_dev) == g_dump_dev.load(std::memory_order_relaxed) &&
+           static_cast<std::uintptr_t>(st.st_ino) == g_dump_ino.load(std::memory_order_relaxed);
+}
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "the crash handler reads this flag; it must be lock-free");
 
 // Fixed alternate signal stack (glibc 2.34+ made SIGSTKSZ a runtime value that
 // can't size an array): 64 KiB is comfortably above SIGSTKSZ on every target.
@@ -272,6 +348,25 @@ void extract_pc_lr(void *ucontext, std::uintptr_t &pc, std::uintptr_t &lr) {
 #endif
 }
 
+/** The stack pointer from the signal ucontext; 0 when unavailable. Read before
+ *  and after chaining: a runtime that resolved the fault moved it or the PC. */
+std::uintptr_t extract_sp(void *ucontext) {
+    if (ucontext == nullptr) return 0;
+    auto *uc = static_cast<ucontext_t *>(ucontext);
+#if defined(__aarch64__)
+    return static_cast<std::uintptr_t>(uc->uc_mcontext.sp);
+#elif defined(__arm__)
+    return static_cast<std::uintptr_t>(uc->uc_mcontext.arm_sp);
+#elif defined(__x86_64__)
+    return static_cast<std::uintptr_t>(uc->uc_mcontext.gregs[REG_RSP]);
+#elif defined(__i386__)
+    return static_cast<std::uintptr_t>(uc->uc_mcontext.gregs[REG_ESP]);
+#else
+    (void)uc;
+    return 0;
+#endif
+}
+
 void write_frame(int fd, std::uintptr_t addr) {
     std::uint64_t offset = 0;
     const int idx = resolve_module(addr, offset);
@@ -311,93 +406,219 @@ void reraise_default(int sig) {
     raise(sig);
 }
 
-/** Invoke the previously-installed handler for `sig` (chaining), supporting
- *  both SA_SIGINFO 3-arg and plain 1-arg forms, and SIG_DFL/SIG_IGN. */
-void chain_old(int sig, siginfo_t *info, void *ucontext) {
-    const struct sigaction *old = nullptr;
+/** The saved previous action for `sig`; nullptr when `sig` is not one of ours. */
+struct sigaction *previous_action(int sig) {
     for (int i = 0; i < kSignalCount; ++i) {
         if (kSignals[i] == sig) {
-            old = &g_state.old_actions[i];
-            break;
+            return &g_state.old_actions[i];
         }
     }
-    if (old == nullptr) {
+    return nullptr;
+}
+
+/** True when `act` names a function to call rather than SIG_DFL / SIG_IGN.
+ *  sa_handler and sa_sigaction share storage, so this holds for both forms. */
+bool is_handler(const struct sigaction &act) {
+    return act.sa_handler != SIG_DFL && act.sa_handler != SIG_IGN;
+}
+
+void invoke_previous(const struct sigaction &act, int sig, siginfo_t *info, void *ucontext) {
+    if ((act.sa_flags & SA_SIGINFO) != 0) {
+        act.sa_sigaction(sig, info, ucontext);
+    } else {
+        act.sa_handler(sig);
+    }
+}
+
+/** Hand the signal to the previously-installed handler (SA_SIGINFO or plain
+ *  form); with none (SIG_DFL / SIG_IGN), restore the default and re-raise. */
+void chain_old(int sig, siginfo_t *info, void *ucontext) {
+    const struct sigaction *old = previous_action(sig);
+    if (old == nullptr || !is_handler(*old)) {
         reraise_default(sig);
         return;
     }
-    if ((old->sa_flags & SA_SIGINFO) != 0 && old->sa_sigaction != nullptr) {
-        old->sa_sigaction(sig, info, ucontext);
-        return;
-    }
-    if (old->sa_handler == SIG_DFL || old->sa_handler == SIG_IGN || old->sa_handler == nullptr) {
-        reraise_default(sig);
-        return;
-    }
-    old->sa_handler(sig);
+    invoke_previous(*old, sig, info, ucontext);
+}
+
+/** Write the fixed-format dump (no fsync: the page cache outlives the process).
+ *  Returns the fd written to, or -1 when capture is off or unavailable. */
+int write_dump(int sig, const siginfo_t *info, std::uintptr_t pc, std::uintptr_t lr) {
+    const int fd = g_capture_enabled.load(std::memory_order_relaxed) ? g_state.dump_fd : -1;
+    if (fd < 0 || !dump_fd_is_ours(fd)) return -1;
+    write_str(fd, "tombstone-native-crash 1\n");
+    write_str(fd, "signal ");
+    write_dec(fd, sig);
+    write_str(fd, "\n");
+    write_str(fd, "code ");
+    write_dec(fd, info != nullptr ? info->si_code : 0);
+    write_str(fd, "\n");
+    write_str(fd, "fault ");
+    write_hex(fd, info != nullptr ? reinterpret_cast<std::uintptr_t>(info->si_addr) : 0);
+    write_str(fd, "\n");
+    if (pc != 0) write_frame(fd, pc);
+    if (lr != 0) write_frame(fd, lr);
+    write_str(fd, "end\n");
+    return fd;
+}
+
+/** Withdraw a dump written for a fault that turned out to be handled. */
+void retract_dump(int fd) {
+    if (fd < 0 || !dump_fd_is_ours(fd)) return;
+    const int truncated = ftruncate(fd, 0);
+    (void)truncated;
+    lseek(fd, 0, SEEK_SET);
+}
+
+std::int64_t monotonic_ns() {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return static_cast<std::int64_t>(ts.tv_sec) * 1000000000LL + static_cast<std::int64_t>(ts.tv_nsec);
+}
+
+extern "C" void tombstone_signal_handler(int sig, siginfo_t *info, void *ucontext);
+
+/** True while our handler is still the installed disposition for `sig`. */
+bool still_registered(int sig) {
+    struct sigaction current;
+    std::memset(&current, 0, sizeof(current));
+    if (sigaction(sig, nullptr, &current) != 0) return true;  // cannot tell: assume unchanged
+    return (current.sa_flags & SA_SIGINFO) != 0 && current.sa_sigaction == tombstone_signal_handler;
+}
+
+/** True when `sig` is pending again (blocked while we run): the previous handler re-sent it. */
+bool signal_pending(int sig) {
+    sigset_t pending;
+    sigemptyset(&pending);
+    if (sigpending(&pending) != 0) return false;
+    return sigismember(&pending, sig) == 1;
 }
 
 extern "C" void tombstone_signal_handler(int sig, siginfo_t *info, void *ucontext) {
-    // Re-entrance / double-fault guard (atomic test-and-set): a second fatal signal — including one on
+    // The handler may now return into the interrupted code: leave its errno untouched.
+    const int saved_errno = errno;
+    // Re-entrance / double-fault guard (atomic test-and-set): a second signal — including one on
     // another thread while we're dumping — must not recurse or share the fd; hand straight to the old
-    // handler. Never cleared: a crash is terminal.
+    // handler. Cleared again only when a fault turns out to be handled (resume below).
     if (g_in_handler.test_and_set()) {
         chain_old(sig, info, ucontext);
+        errno = saved_errno;
         return;
     }
+    const std::int64_t entered_ns = monotonic_ns();
 
-    const int fd = g_state.dump_fd;
-    if (fd >= 0) {
-        write_str(fd, "tombstone-native-crash 1\n");
-        write_str(fd, "signal ");
-        write_dec(fd, sig);
-        write_str(fd, "\n");
-        write_str(fd, "code ");
-        write_dec(fd, info != nullptr ? info->si_code : 0);
-        write_str(fd, "\n");
-        write_str(fd, "fault ");
-        write_hex(fd, info != nullptr ? reinterpret_cast<std::uintptr_t>(info->si_addr) : 0);
-        write_str(fd, "\n");
+    std::uintptr_t pc = 0;
+    std::uintptr_t lr = 0;
+    extract_pc_lr(ucontext, pc, lr);
+    const std::uintptr_t sp = extract_sp(ucontext);
+    const std::uintptr_t fault =
+        info != nullptr ? reinterpret_cast<std::uintptr_t>(info->si_addr) : 0;
+    // Written BEFORE chaining: an engine crash reporter that ends the process itself
+    // (Unity / UGS) must not cost us the dump.
+    const int fd = write_dump(sig, info, pc, lr);
 
-        std::uintptr_t pc = 0;
-        std::uintptr_t lr = 0;
-        extract_pc_lr(ucontext, pc, lr);
-        if (pc != 0) write_frame(fd, pc);
-        if (lr != 0) write_frame(fd, lr);
-        write_str(fd, "end\n");
-        fsync(fd);
+    struct sigaction *previous = previous_action(sig);
+    if (previous == nullptr || !is_handler(*previous)) {
+        // Nobody else handles this signal: it is fatal, exactly as without us.
+        if (fd >= 0) fsync(fd);
+        reraise_default(sig);
+        return;
     }
+    const bool one_shot = (previous->sa_flags & SA_RESETHAND) != 0;
+    invoke_previous(*previous, sig, info, ucontext);
 
-    // Hand off to whatever was installed before us (Unity / UGS), then ensure
-    // the process still dies with the real signal if that handler returns.
-    chain_old(sig, info, ucontext);
-    reraise_default(sig);
+    // The previous handler RETURNED. A one-shot (SA_RESETHAND) handler expected the
+    // next delivery to take the default action: emulate that from now on.
+    if (one_shot) {
+        previous->sa_handler = SIG_DFL;
+        previous->sa_flags = 0;
+    }
+    std::uintptr_t pc_after = 0;
+    std::uintptr_t lr_after = 0;
+    extract_pc_lr(ucontext, pc_after, lr_after);
+    ChainFacts facts;
+    facts.signal_no = sig;
+    facts.still_registered = still_registered(sig);
+    facts.context_changed = pc_after != pc || extract_sp(ucontext) != sp;
+    facts.resent = signal_pending(sig);
+    if (facts.context_changed) {
+        g_repeats.count = 0;
+    } else {
+        facts.unchanged_repeats = note_unchanged_fault(g_repeats, sig, pc, fault, entered_ns);
+    }
+    switch (verdict_after_chain(facts)) {
+    case ChainVerdict::resume:
+        // Handled (a managed exception, a page fixed in place): not a crash.
+        retract_dump(fd);
+        g_repeats.last_exit_ns = monotonic_ns();
+        g_in_handler.clear();
+        errno = saved_errno;
+        return;
+    case ChainVerdict::defer:
+        if (fd >= 0) fsync(fd);
+        errno = saved_errno;
+        return;
+    case ChainVerdict::die:
+    default:
+        if (fd >= 0) fsync(fd);
+        reraise_default(sig);
+        errno = saved_errno;
+        return;
+    }
 }
 
 }  // namespace
 
+void set_capture_enabled(bool enabled) noexcept {
+    g_capture_enabled.store(enabled, std::memory_order_relaxed);
+}
+
 bool install(const std::filesystem::path &data_dir, SdkLog &sdk_log) {
-    if (g_state.installed) return true;
+    const std::filesystem::path dump_path = data_dir / kDumpFileName;
+    if (g_state.installed) {
+        // Initialized again in this process (after a shutdown, maybe for another data
+        // directory): the previous dump file was consumed by take_previous, so point the
+        // existing descriptor at a fresh one. dup2 swaps it atomically — the handler never
+        // sees a closed or half-replaced descriptor.
+        const int fresh = open(dump_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (fresh >= 0 && dup2(fresh, g_state.dump_fd) >= 0) {
+            remember_dump_identity(g_state.dump_fd);
+        } else {
+            sdk_log.warn("native crash: could not reopen the dump file; crashes are not dumped");
+        }
+        if (fresh >= 0) close(fresh);
+        set_capture_enabled(true);
+        return true;
+    }
 
     // 1) Pre-open the dump fd (truncating): the handler only write()s to it.
-    const std::filesystem::path dump_path = data_dir / kDumpFileName;
-    g_state.dump_fd = open(dump_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    g_state.dump_fd = open(dump_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (g_state.dump_fd < 0) {
         sdk_log.warn("native crash: could not open dump file; handler not installed");
         return false;
     }
+    remember_dump_identity(g_state.dump_fd);
 
     // 2) Pre-capture the loaded-module table (base/end/name/build-id).
     g_state.module_count = 0;
     dl_iterate_phdr(phdr_callback, &g_state);
 
-    // 3) Register the pre-allocated alternate signal stack so a stack-overflow
-    //    SIGSEGV still has room to run the handler (SA_ONSTACK).
-    stack_t ss;
-    std::memset(&ss, 0, sizeof(ss));
-    ss.ss_sp = g_alt_stack;
-    ss.ss_size = sizeof(g_alt_stack);
-    ss.ss_flags = 0;
-    sigaltstack(&ss, nullptr);
+    // 3) Make sure this thread has an alternate signal stack so a stack-overflow
+    //    SIGSEGV still has room to run the handler (SA_ONSTACK) — but never
+    //    replace one the engine or a managed runtime already registered: its own
+    //    stack-overflow handling relies on it.
+    stack_t existing;
+    std::memset(&existing, 0, sizeof(existing));
+    const bool has_alt_stack = sigaltstack(nullptr, &existing) == 0 &&
+                               (existing.ss_flags & SS_DISABLE) == 0 && existing.ss_sp != nullptr;
+    if (!has_alt_stack) {
+        stack_t ss;
+        std::memset(&ss, 0, sizeof(ss));
+        ss.ss_sp = g_alt_stack;
+        ss.ss_size = sizeof(g_alt_stack);
+        ss.ss_flags = 0;
+        sigaltstack(&ss, nullptr);
+    }
 
     // 4) Install, saving each previous action for chaining.
     struct sigaction sa;
@@ -418,6 +639,7 @@ bool install(const std::filesystem::path &data_dir, SdkLog &sdk_log) {
         return false;
     }
     g_state.installed = true;
+    set_capture_enabled(true);
     sdk_log.info("native crash handler installed (experimental)");
     return true;
 }
@@ -428,6 +650,8 @@ bool install(const std::filesystem::path & /*data_dir*/, SdkLog &sdk_log) {
     sdk_log.info("native crash handler not supported on this platform (using heuristic)");
     return false;
 }
+
+void set_capture_enabled(bool /*enabled*/) noexcept {}
 
 #endif  // TOMBSTONE_NATIVE_CRASH_POSIX
 
@@ -520,13 +744,11 @@ std::optional<NativeCrashDump> take_previous(const std::filesystem::path &data_d
     if (!std::filesystem::exists(dump_path, ec)) return std::nullopt;
     std::optional<NativeCrashDump> result;
     try {
-        std::FILE *f = std::fopen(dump_path.string().c_str(), "rb");
-        if (f != nullptr) {
-            std::string text;
-            char buf[4096];
-            std::size_t n;
-            while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
-            std::fclose(f);
+        // Opened through the path itself (wide on Windows), never a narrowed copy.
+        std::ifstream in{dump_path, std::ios::binary};
+        if (in) {
+            const std::string text{std::istreambuf_iterator<char>{in},
+                                   std::istreambuf_iterator<char>{}};
             result = parse_dump(text);
         }
     } catch (const std::exception &e) {

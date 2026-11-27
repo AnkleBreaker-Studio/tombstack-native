@@ -18,6 +18,42 @@ TEST_CASE("json_writer", "escapes quotes backslashes and control characters") {
     CHECK_EQ(json_escape("\b\f"), std::string{"\\b\\f"});
 }
 
+TEST_CASE("json_writer", "keeps well-formed multibyte UTF-8 verbatim") {
+    CHECK_EQ(json_escape("caf\xC3\xA9"), std::string{"caf\xC3\xA9"});              // 2 bytes
+    CHECK_EQ(json_escape("\xE6\xBC\xA2"), std::string{"\xE6\xBC\xA2"});            // 3 bytes
+    CHECK_EQ(json_escape("\xF0\x9F\x98\x80!"), std::string{"\xF0\x9F\x98\x80!"});  // 4 bytes
+    CHECK_EQ(json_escape("\xEF\xBF\xBD"), std::string{"\xEF\xBF\xBD"});  // a real U+FFFD stays raw
+}
+
+TEST_CASE("json_writer", "replaces each ill-formed UTF-8 sequence with one \\ufffd") {
+    // A Latin-1 byte from a legacy code-page string ("Acc\xE8s", "J\xE9r\xF4me").
+    CHECK_EQ(json_escape("a\xE9" "b"), std::string{"a\\ufffdb"});
+    CHECK_EQ(json_escape("Acc\xE8s"), std::string{"Acc\\ufffds"});
+    // A truncated sequence is ONE replacement (its maximal valid prefix), at the end or mid-string.
+    CHECK_EQ(json_escape("ab\xE2\x82"), std::string{"ab\\ufffd"});
+    CHECK_EQ(json_escape("\xF0\x9F\x98x"), std::string{"\\ufffdx"});
+    // A stray continuation byte, an overlong lead (C0) and the never-valid F5..FF bytes.
+    CHECK_EQ(json_escape("\x80"), std::string{"\\ufffd"});
+    CHECK_EQ(json_escape("\xC0\xAF"), std::string{"\\ufffd\\ufffd"});
+    CHECK_EQ(json_escape("\xFF"), std::string{"\\ufffd"});
+    // Overlong 3-byte form, a UTF-16 surrogate, and a code point above U+10FFFF.
+    CHECK_EQ(json_escape("\xE0\x80\x80"), std::string{"\\ufffd\\ufffd\\ufffd"});
+    CHECK_EQ(json_escape("\xED\xA0\x80"), std::string{"\\ufffd\\ufffd\\ufffd"});
+    CHECK_EQ(json_escape("\xF4\x90\x80\x80"), std::string{"\\ufffd\\ufffd\\ufffd\\ufffd"});
+    // Escaping of ASCII specials is unaffected around a replacement.
+    CHECK_EQ(json_escape("\"\xE9\n"), std::string{"\\\"\\ufffd\\n"});
+}
+
+TEST_CASE("json_writer", "utf8_sanitized replaces ill-formed sequences with a raw U+FFFD") {
+    using tombstone::utf8_sanitized;
+    // A body 0.9.4 stored with a Latin-1 byte inside a JSON string.
+    CHECK_EQ(utf8_sanitized(R"({"stackHint":"Acc)" "\xE8" R"(s"})"),
+             std::string{R"({"stackHint":"Acc)" "\xEF\xBF\xBD" R"(s"})"});
+    CHECK_EQ(utf8_sanitized("ab\xE2\x82"), std::string{"ab\xEF\xBF\xBD"});  // one per subpart
+    CHECK_EQ(utf8_sanitized("caf\xC3\xA9 \xE6\xBC\xA2"), std::string{"caf\xC3\xA9 \xE6\xBC\xA2"});
+    CHECK_EQ(utf8_sanitized(R"({"a":"\\u00e9"})"), std::string{R"({"a":"\\u00e9"})"});  // ASCII kept
+}
+
 TEST_CASE("json_writer", "builds flat objects in call order") {
     JsonWriter json;
     json.begin_object();
