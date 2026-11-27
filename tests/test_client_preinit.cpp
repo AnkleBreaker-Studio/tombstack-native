@@ -17,7 +17,7 @@ constexpr const char *kToken = "tmb_test_preinit";
 
 /** The state a crashed earlier session leaves: a pending crash report and its live marker. */
 void plant_crashed_session(const fs::path &dir) {
-    write_file(dir / "pending" / "crashes" / "1700000000000-cccccccc.json",
+    write_file(dir / "pending" / "crashes" / client_harness::pending_file_name("cccccccc"),
                R"({"occurredAtIso":"2026-11-01T00:00:00.000Z","buildVersion":"1.0.0",)"
                R"("os":"windows","arch":"x64","signature":"sig-earlier","stackHint":"h",)"
                R"("log":false})");

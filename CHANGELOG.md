@@ -87,6 +87,10 @@ the `tombstone` library name are stable — Tombstack is the product name).
   refused by the server and then deleted. Each invalid sequence is now sent as the Unicode
   replacement character, so these reports arrive. Reports of this kind that an earlier
   version left waiting on disk are cleaned the same way when they are sent.
+- Pending reports are now written under a temporary name and renamed once complete, so a crash
+  or a full disk during the write no longer leaves a truncated report that the server refuses.
+  A pending report or batch that no launch could deliver within 90 days is deleted unsent, so a
+  report kept through refusals is not retried at every launch forever.
 
 ## [0.9.4] - 2026-09-18
 

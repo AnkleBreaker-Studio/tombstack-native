@@ -23,7 +23,7 @@ constexpr const char *kTokenB = "tmb_test_game_b";
 /** What an SDK up to 0.9.4 leaves in the shared default directory: a pending crash
  *  report, a live session marker, a session log and a device identity. */
 void plant_legacy_files(const fs::path &root) {
-    write_file(root / "pending" / "crashes" / "1700000000000-aaaaaaaa.json",
+    write_file(root / "pending" / "crashes" / client_harness::pending_file_name("aaaaaaaa"),
                R"({"occurredAtIso":"2026-11-01T00:00:00.000Z","buildVersion":"9.9.9",)"
                R"("os":"windows","arch":"x64","signature":"legacy-other-game",)"
                R"("stackHint":"legacy-other-game","userId":"other-player","log":false})");
@@ -196,7 +196,7 @@ TEST_CASE("client_storage", "a LOCALAPPDATA outside the ANSI code page still hol
 TEST_CASE("client_storage", "a pending report an older version wrote in a code page is sent as UTF-8") {
     // 0.9.4 copied bytes >= 0x80 verbatim: this file holds a lone Latin-1 "é" (0xE9).
     ttest::TempDir dir;
-    write_file(dir.path() / "pending" / "crashes" / "1700000000000-eeeeeeee.json",
+    write_file(dir.path() / "pending" / "crashes" / client_harness::pending_file_name("eeeeeeee"),
                "{\"occurredAtIso\":\"2026-11-01T00:00:00.000Z\",\"buildVersion\":\"1.0.0\","
                "\"os\":\"windows\",\"arch\":\"x64\",\"signature\":\"sig-latin1\","
                "\"stackHint\":\"Acc\xE8s refus\xE9\",\"log\":false}");
@@ -213,7 +213,7 @@ TEST_CASE("client_storage", "a pending report an older version wrote in a code p
 TEST_CASE("client_storage", "a directory from before ownership existed is claimed by its game") {
     ttest::TempDir legacy;
     // A game that already passed its own data_dir to an older SDK keeps its pending reports.
-    write_file(legacy.path() / "pending" / "crashes" / "1700000000000-bbbbbbbb.json",
+    write_file(legacy.path() / "pending" / "crashes" / client_harness::pending_file_name("bbbbbbbb"),
                R"({"occurredAtIso":"2026-11-01T00:00:00.000Z","buildVersion":"1.0.0",)"
                R"("os":"windows","arch":"x64","signature":"own-pending","stackHint":"h",)"
                R"("log":false})");

@@ -15,7 +15,7 @@ using client_harness::write_file;
 
 TEST_CASE("client_instances", "a second process of the game leaves the first one's session alone") {
     ttest::TempDir dir;
-    write_file(dir.path() / "pending" / "crashes" / "1700000000000-dddddddd.json",
+    write_file(dir.path() / "pending" / "crashes" / client_harness::pending_file_name("dddddddd"),
                R"({"occurredAtIso":"2026-11-01T00:00:00.000Z","buildVersion":"1.0.0",)"
                R"("os":"windows","arch":"x64","signature":"sig-pending","stackHint":"h",)"
                R"("log":false})");

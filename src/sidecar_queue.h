@@ -1,10 +1,13 @@
 #ifndef TOMBSTONE_SRC_SIDECAR_QUEUE_H
 #define TOMBSTONE_SRC_SIDECAR_QUEUE_H
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace tombstone {
@@ -42,10 +45,20 @@ struct SidecarRecord {
  * `tools/uploader/upload.mjs` at `pending/crashes` posts the files unchanged.
  * The SDK itself drains every directory on the next init (with consent). Bounded
  * per kind; fail-silent (a full disk degrades to "not persisted", never throws).
+ * A file is written under a temporary name and renamed into place, so a crash or
+ * a full disk mid-write never leaves a truncated payload to send. A payload no
+ * launch delivered within max_age is deleted unsent at the next scan.
  */
 class SidecarQueue {
 public:
     static constexpr std::size_t max_files_per_kind = 64;
+    /** Unity and Godot SDK parity: a payload kept through refusals (a refused token,
+     *  a spending cap) cannot stay on the device, retried at every launch, forever. */
+    static constexpr std::chrono::hours max_age{24 * 90};
+
+    /** A payload file named "<ms since epoch>-<hex>.json" older than max_age at
+     *  `now_ms`. A name without that stamp never expires. Pure. */
+    static bool expired(std::string_view file_name, std::int64_t now_ms) noexcept;
 
     explicit SidecarQueue(SdkLog &sdk_log) noexcept;
 
@@ -65,7 +78,8 @@ public:
     /** Delete a delivered (or poison) payload's backing file. Best-effort. */
     void remove(const std::filesystem::path &path) noexcept;
 
-    /** All pending sidecars across every kind (offline drain at init). */
+    /** All pending sidecars across every kind (offline drain at init). Payloads past
+     *  max_age, and temporary files an interrupted write left, are deleted instead. */
     std::vector<SidecarRecord> scan();
 
     /** Delete every pending payload of every kind (consent revoked). Best-effort. */
@@ -77,6 +91,11 @@ public:
 private:
     std::filesystem::path kind_dir(SidecarKind kind) const;
     std::size_t count_files(const std::filesystem::path &dir) const;
+    /** Under mutex_: write `body` to a new file of `kind`. "" on success, else why not. */
+    std::string write_locked(SidecarKind kind, const std::string &body, std::filesystem::path &out);
+    /** Under mutex_: read the payloads of one kind into `out`; count what expired. */
+    void scan_kind_locked(SidecarKind kind, std::int64_t now_ms, std::vector<SidecarRecord> &out,
+                          std::size_t &expired_count);
 
     SdkLog &sdk_log_;
     std::mutex mutex_;

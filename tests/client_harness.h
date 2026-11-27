@@ -8,6 +8,7 @@
 
 #include "fake_transport.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -90,6 +91,15 @@ public:
 private:
     tombstone_result result_{TOMBSTONE_ERROR_INTERNAL};
 };
+
+/** A pending-file name as the SDK writes it, stamped an hour ago: a report an earlier
+ *  session left (a stamp older than 90 days would expire unsent). */
+inline std::string pending_file_name(std::string_view hex8) {
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::system_clock::now().time_since_epoch() - std::chrono::hours{1})
+                           .count();
+    return std::to_string(stamp) + "-" + std::string{hex8} + ".json";
+}
 
 inline void write_file(const std::filesystem::path &path, std::string_view content) {
     std::filesystem::create_directories(path.parent_path());
