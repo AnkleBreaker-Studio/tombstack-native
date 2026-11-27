@@ -1,5 +1,7 @@
 #include "server_clock.h"
 
+#include "clock.h"
+
 #include <ctime>
 
 namespace tombstone {
@@ -28,18 +30,6 @@ bool parse_digits(std::string_view value, std::size_t at, std::size_t count, int
     }
     out = result;
     return true;
-}
-
-/** Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm). */
-std::int64_t days_from_civil(std::int64_t year, unsigned month, unsigned day) noexcept {
-    year -= (month <= 2) ? 1 : 0;
-    const std::int64_t era = (year >= 0 ? year : year - 399) / 400;
-    const auto year_of_era = static_cast<unsigned>(year - era * 400);
-    const unsigned shifted_month = (month > 2) ? month - 3 : month + 9;
-    const unsigned day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
-    const unsigned day_of_era =
-        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    return era * 146097 + static_cast<std::int64_t>(day_of_era) - 719468;
 }
 
 std::int64_t device_now() noexcept { return static_cast<std::int64_t>(std::time(nullptr)); }

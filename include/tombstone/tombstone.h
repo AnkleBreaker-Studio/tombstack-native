@@ -11,6 +11,14 @@
  * No entry point is async-signal-safe: never call the SDK from a signal
  * handler or an exception filter (see tombstone_report_crash).
  *
+ * Server refusals: a 402 (the studio's spending cap) stops every request until
+ * the time the server names (re-checked at least hourly), and a refused SDK
+ * token (401 invalid_api_key, or 403) stops them until the next launch. Crash
+ * and bug reports are kept through either stop and sent afterwards; heartbeats,
+ * events and metrics captured during it are not. A report the server refuses
+ * itself (400, 404, 413, 422) is deleted, as is one no launch delivered within
+ * 90 days.
+ *
  * The SDK binds to one implicit process-wide client (tombstone_handle is the
  * opaque type reserved for a future multi-instance API). Double-init and
  * use-after-shutdown return result codes; they are never undefined behavior.
@@ -426,7 +434,8 @@ TOMBSTONE_API void tombstone_report_frame(double frame_ms);
  * is the one-line summary (clamped to 512; NULL becomes "Crash"); stack_trace
  * is optional (clamped to 8192). attach_log != 0 requests a session-log
  * upload slot. Write-ahead durable: persisted to disk before the first upload
- * attempt. Deduped per signature (<= 1 report/min; repeats return
+ * attempt, and kept through the server refusals listed at the top of this file.
+ * Deduped per signature (<= 1 report/min; repeats return
  * TOMBSTONE_SUPPRESSED and become a counter breadcrumb).
  *
  * NOT async-signal-safe: it allocates, takes locks and writes files on the

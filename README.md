@@ -113,10 +113,18 @@ TOMBSTONE_BASE_URL=https://host TOMBSTONE_TOKEN=tmb_... \
     node tools/uploader/upload.mjs <data_dir>/pending/crashes
 ```
 
-The SDK also drains the queue itself on the next `tombstone_init`. Delivery
-classification: 2xx delete, 429/5xx/network keep, a 401 about the request
-signature keep and retry (the SDK signs with the server's clock, learned from
-each response's `Date`), other 4xx drop (poison).
+The SDK also drains the queue itself on the next `tombstone_init`; a payload no
+launch delivered within 90 days is deleted unsent. How each server answer is
+handled:
+
+| Answer | What the SDK does |
+|---|---|
+| 2xx | Delivered: the pending file is deleted. |
+| 408, 429, 5xx, no answer | Kept and retried with backoff (a 429/503 `Retry-After` raises the wait). |
+| 401 about the request signature | Kept and retried: the SDK signs with the server's clock, learned from each response's `Date`. |
+| 402 `spend_cap_reached` (the studio's spending cap) | Nothing is sent until the `resumesAt` it names, re-checked at least hourly. Crash and bug reports are kept and sent afterwards; heartbeats, events and metrics from the stop are not kept. |
+| 401 `invalid_api_key`, or 403 | Nothing more is sent with this token until the next launch. Crash and bug reports stay on disk. |
+| Any other 4xx (400, 404, 413, 422...) | The server refuses the payload itself: it is deleted. |
 
 ## Building
 

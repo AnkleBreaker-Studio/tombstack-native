@@ -58,4 +58,14 @@ std::string now_iso8601_utc_ms() {
     return format_iso8601_utc_ms(static_cast<std::int64_t>(ms));
 }
 
+std::int64_t days_from_civil(std::int64_t year, unsigned month, unsigned day) noexcept {
+    year -= (month <= 2) ? 1 : 0;
+    const std::int64_t era = (year >= 0 ? year : year - 399) / 400;
+    const auto year_of_era = static_cast<unsigned>(year - era * 400);
+    const unsigned shifted_month = (month > 2) ? month - 3 : month + 9;
+    const unsigned day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    const unsigned day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    return era * 146'097 + static_cast<std::int64_t>(day_of_era) - 719'468;
+}
+
 }  // namespace tombstone

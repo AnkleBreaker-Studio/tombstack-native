@@ -128,6 +128,20 @@ withdraws consent, `tombstone_set_consent(0)` discards everything not yet
 delivered (pending reports, buffered events and metrics, breadcrumbs, session
 logs); none of it is sent after a later re-grant.
 
+## When the server refuses
+
+- **402 `spend_cap_reached`**: your studio reached the monthly spending cap it
+  set on the Billing page. The SDK sends nothing until the `resumesAt` time the
+  server names (it checks again at least every hour, so raising the cap resumes
+  a running game within the hour). Crash and bug reports are kept and sent after
+  the stop; heartbeats, events and metrics captured during it are not kept.
+- **401 `invalid_api_key` or 403**: the SDK token was refused (revoked, rotated,
+  or not an ingest token). Nothing more is sent until the next launch; crash and
+  bug reports stay on disk and are tried again then.
+- **Other 4xx** (400, 404, 413, 422): the server refuses that payload itself,
+  and it is deleted. Check `endpoint` if every payload gets a 404.
+- Reports no launch could deliver within 90 days are deleted unsent.
+
 ## Shipping checklist
 
 - [ ] `build_version` matches the build you ship (dashboard filters by it).

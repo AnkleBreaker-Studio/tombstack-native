@@ -36,3 +36,12 @@ TEST_CASE("header_contract", "tombstone_report_crash is documented as not async-
     CHECK(doc.find("signal handler") != std::string::npos);
     CHECK(doc.find("exception") != std::string::npos);
 }
+
+TEST_CASE("header_contract", "the server refusals and what happens to reports are documented") {
+    const std::string header = read_public_header();
+    const std::string top = header.substr(0, header.find("#include"));
+    CHECK(top.find("402") != std::string::npos);
+    CHECK(top.find("401 invalid_api_key") != std::string::npos);
+    CHECK(top.find("403") != std::string::npos);
+    CHECK(top.find("90 days") != std::string::npos);
+}

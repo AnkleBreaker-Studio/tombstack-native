@@ -74,6 +74,7 @@ set(TOMBSTONE_CORE_SOURCES
   src/breadcrumb_ring.cpp
   src/clock.cpp
   src/dedupe.cpp
+  src/delivery_policy.cpp
   src/device_identity.cpp
   src/frame_stats.cpp
   src/instance_lock.cpp
@@ -169,6 +170,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_clock.cpp
     tests/test_concurrency.cpp
     tests/test_dedupe.cpp
+    tests/test_delivery_policy.cpp
     tests/test_device_identity.cpp
     tests/test_frame_stats.cpp
     tests/test_header_contract.cpp
@@ -200,7 +202,7 @@ if(TOMBSTONE_BUILD_TESTS)
     "TOMBSTONE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
   foreach(suite
-      batch breadcrumb_ring clock concurrency dedupe device_identity frame_stats header_contract
+      batch breadcrumb_ring clock concurrency dedupe delivery_policy device_identity frame_stats header_contract
       instance_lock json_scan json_writer native_crash payloads platform preinit retry_after sampler server_clock
       session_log session_marker sidecar signature start_gate)
     add_test(NAME ${suite} COMMAND tombstone_tests ${suite})
@@ -221,6 +223,7 @@ if(TOMBSTONE_BUILD_TESTS)
     tests/test_client_storage.cpp
     tests/test_client_telemetry.cpp
     tests/test_worker_signing.cpp
+    tests/test_worker_status.cpp
     ${TOMBSTONE_CLIENT_TEST_SDK_SOURCES}
     $<TARGET_OBJECTS:tombstone_core>
   )
@@ -233,7 +236,7 @@ if(TOMBSTONE_BUILD_TESTS)
   target_link_libraries(tombstone_client_tests PRIVATE Threads::Threads tombstone_warnings)
 
   foreach(suite client_consent client_instances client_native_report client_preinit
-      client_shutdown client_storage client_telemetry worker_signing)
+      client_shutdown client_storage client_telemetry worker_signing worker_status)
     add_test(NAME ${suite} COMMAND tombstone_client_tests ${suite})
   endforeach()
 

@@ -1,5 +1,6 @@
 #include "worker.h"
 
+#include "delivery_policy.h"
 #include "json_scan.h"
 #include "retry_after.h"
 #include "sdk_log.h"
@@ -12,24 +13,16 @@ namespace tombstone {
 
 namespace {
 
-/** 2xx delete, 408/429/5xx/network keep, a signature 401 keep (retry with the
- *  corrected clock), any other 4xx drop (a 401 refusing the token included). */
-enum class Outcome { delivered, transient, poison };
+bool is_delivered(const HttpResponse &response) noexcept {
+    return settle_upload_response(response.transport_error, response.status) ==
+           Settle::delivered;
+}
 
-Outcome classify(bool transport_error, long status, Unauthorized unauthorized) noexcept {
-    if (transport_error) {
-        return Outcome::transient;
-    }
-    if (status >= 200 && status < 300) {
-        return Outcome::delivered;
-    }
-    if (unauthorized == Unauthorized::signature) {
-        return Outcome::transient;  // a wrong device clock, corrected from this response's Date
-    }
-    if (status == 408 || status == 429 || status >= 500) {
-        return Outcome::transient;
-    }
-    return Outcome::poison;
+/** Kept through a stop: a crash or bug report (write-ahead), or a payload already
+ *  on disk. Heartbeats, in-memory batches and pull-request calls are not. */
+bool kept_through_stop(const UploadJob &job) noexcept {
+    return !job.is_log_upload && !job.no_persist &&
+           (job.durability == Durability::write_ahead || !job.sidecar_path.empty());
 }
 
 /** How a 401 reads for this job: only a SIGNED request can fail on its signature. */
@@ -113,13 +106,24 @@ void Worker::wake() {
 }
 
 void Worker::enqueue(UploadJob job) {
+    SetAside set_aside;
+    bool dropped_oldest = false;
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (queue_.size() >= max_queue_size) {
-            queue_.pop_front();  // bounded: drop the oldest entry
-            sdk_log_.warn("outbound queue full; oldest payload dropped");
+        if (!job.is_log_upload && sending_stopped_locked(std::chrono::steady_clock::now())) {
+            set_aside_locked(std::move(job), set_aside);
+        } else {
+            if (queue_.size() >= max_queue_size) {
+                queue_.pop_front();  // bounded: drop the oldest entry
+                dropped_oldest = true;
+            }
+            queue_.push_back(std::move(job));
         }
-        queue_.push_back(std::move(job));
+    }
+    finish_set_aside(set_aside);
+    if (dropped_oldest) {
+        // Outside the lock: the diagnostics callback must never run while it is held.
+        sdk_log_.warn("outbound queue full; oldest payload dropped");
     }
     cv_.notify_all();
 }
@@ -133,7 +137,7 @@ bool Worker::flush(std::chrono::milliseconds timeout) {
 
 std::size_t Worker::queued_count() const {
     const std::lock_guard<std::mutex> lock(mutex_);
-    return queue_.size();
+    return queue_.size() + parked_.size();
 }
 
 std::uint64_t Worker::consent_epoch() const noexcept { return consent_epoch_.load(); }
@@ -143,12 +147,14 @@ void Worker::revoke_consent() {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         consent_epoch_.fetch_add(1);
-        for (auto it = queue_.begin(); it != queue_.end();) {
-            if (it->consent_gated) {
-                dropped.push_back(std::move(*it));
-                it = queue_.erase(it);
-            } else {
-                ++it;
+        for (std::deque<UploadJob> *jobs : {&queue_, &parked_}) {
+            for (auto it = jobs->begin(); it != jobs->end();) {
+                if (it->consent_gated) {
+                    dropped.push_back(std::move(*it));
+                    it = jobs->erase(it);
+                } else {
+                    ++it;
+                }
             }
         }
     }
@@ -188,6 +194,9 @@ void Worker::run() {
                         return true;
                     }
                 }
+                if (!parked_.empty() && !sending_stopped_locked(now)) {
+                    return true;  // a spending-cap stop just ended
+                }
                 return now >= next_log_flush_;
             });
             if (!running_) {
@@ -195,6 +204,7 @@ void Worker::run() {
             }
             wake_requested_.store(false);
             const auto now = std::chrono::steady_clock::now();
+            resume_parked_locked(now);
             if (now >= next_log_flush_) {
                 next_log_flush_ = now + log_flush_interval;
                 lock.unlock();
@@ -234,6 +244,9 @@ std::chrono::steady_clock::time_point Worker::next_wakeup() const {
             wakeup = queued.not_before;
         }
     }
+    if (!parked_.empty() && !token_refused_ && stopped_until_ < wakeup) {
+        wakeup = stopped_until_;  // parked reports go out when the spending-cap stop ends
+    }
     if (batch_drainer_) {
         // Bound the idle wait so the age trigger is evaluated within ~1s.
         const auto batch_deadline = std::chrono::steady_clock::now() + batch_check_interval;
@@ -255,13 +268,12 @@ void Worker::process(UploadJob &job) {
                 job.form_fields.empty()
                     ? transport_.put_text(job.url, job.raw, log_upload_timeout_seconds)
                     : transport_.post_log(job.url, job.form_fields, job.raw, log_upload_timeout_seconds);
-            const Outcome outcome =
-                classify(response.transport_error, response.status, Unauthorized::none);
-            if (outcome == Outcome::transient && job.attempt + 1 < max_attempts) {
+            const Settle settle = settle_upload_response(response.transport_error, response.status);
+            if (settle == Settle::retry && job.attempt + 1 < max_attempts) {
                 // Retries share the backoff but log uploads are never persisted —
                 // the presigned URL is dead by the next launch anyway.
                 retry_or_give_up(job, retry_after_hint(response.status, response.retry_after));
-            } else if (outcome == Outcome::poison) {
+            } else if (settle == Settle::drop) {
                 sdk_log_.warn("log upload rejected with HTTP " + std::to_string(response.status));
             }
             return;
@@ -282,9 +294,7 @@ void Worker::process(UploadJob &job) {
         // count; suppress_rtt exempts the metrics batch so an rtt sample cannot recurse
         // into an endless batch->rtt->batch loop.
         const bool emit_rtt =
-            rtt_handler_ && job.sign_body && !job.suppress_rtt &&
-            classify(response.transport_error, response.status, Unauthorized::none) ==
-                Outcome::delivered;
+            rtt_handler_ && job.sign_body && !job.suppress_rtt && is_delivered(response);
         handle_post_result(job, response, clock_moved);
         if (emit_rtt) {
             const double ms = std::chrono::duration<double, std::milli>(round_trip).count();
@@ -305,8 +315,9 @@ void Worker::handle_post_result(UploadJob &job, const HttpResponse &response, bo
         return;
     }
     const Unauthorized unauthorized = unauthorized_kind(job, response);
-    switch (classify(response.transport_error, response.status, unauthorized)) {
-    case Outcome::delivered:
+    switch (settle_api_response(response.transport_error, response.status, unauthorized,
+                                job.sign_body)) {
+    case Settle::delivered:
         sidecars_.remove(job.sidecar_path);
         if (job.request_log) {
             schedule_log_upload(job, response.body);
@@ -317,13 +328,19 @@ void Worker::handle_post_result(UploadJob &job, const HttpResponse &response, bo
             ack_handler_(response.body);
         }
         return;
-    case Outcome::poison:
-        // Rejected by validation/auth — retrying forever would just burn quota.
+    case Settle::drop:
+        // The server refuses this payload itself: retrying would just burn quota.
         sdk_log_.warn("payload rejected with HTTP " + std::to_string(response.status) +
                       "; dropping");
         sidecars_.remove(job.sidecar_path);
         return;
-    case Outcome::transient:
+    case Settle::spend_cap:
+        stop_for_spend_cap(job, response);
+        return;
+    case Settle::token_refused:
+        stop_for_refused_token(job, response.status);
+        return;
+    case Settle::retry:
     default:
         if (job.durability == Durability::ephemeral) {
             return;  // a missed heartbeat is stale data, never retried
@@ -386,6 +403,10 @@ void Worker::persist_leftovers() {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         leftovers.swap(queue_);
+        for (UploadJob &parked : parked_) {
+            leftovers.push_back(std::move(parked));  // kept reports a stop still held
+        }
+        parked_.clear();
     }
     for (const UploadJob &job : leftovers) {
         if (captured_before_revoke(job)) {
@@ -397,6 +418,106 @@ void Worker::persist_leftovers() {
             sidecars_.write(job.kind, job.body);
         }
     }
+}
+
+void Worker::stop_for_spend_cap(UploadJob &job, const HttpResponse &response) {
+    // resumesAt is the server's time: compare it with the server clock, not the device's.
+    const std::int64_t pause_seconds = spend_cap_pause_seconds(
+        response.body, server_clock_.now_unix_seconds(), min_spend_cap_stop_.count());
+    SetAside set_aside;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{pause_seconds};
+        if (until > stopped_until_) {
+            stopped_until_ = until;
+        }
+        set_aside_locked(std::move(job), set_aside);
+        set_aside_queue_locked(set_aside);
+    }
+    finish_set_aside(set_aside);
+    sdk_log_.warn("spending cap reached (HTTP 402): nothing is sent for " +
+                  std::to_string(pause_seconds) +
+                  " s; crash and bug reports are kept and sent after that");
+    cv_.notify_all();  // flush() waiters see the emptied queue
+}
+
+void Worker::stop_for_refused_token(UploadJob &job, long status) {
+    SetAside set_aside;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        token_refused_ = true;
+        set_aside_locked(std::move(job), set_aside);
+        set_aside_queue_locked(set_aside);
+        std::deque<UploadJob> parked;
+        parked.swap(parked_);
+        for (UploadJob &held : parked) {
+            set_aside_locked(std::move(held), set_aside);  // now left to their files
+        }
+    }
+    finish_set_aside(set_aside);
+    sdk_log_.error("the SDK token was refused (HTTP " + std::to_string(status) +
+                   "): nothing more is sent until the next launch; crash and bug reports "
+                   "stay on disk");
+    cv_.notify_all();
+}
+
+bool Worker::sending_stopped_locked(std::chrono::steady_clock::time_point now) const noexcept {
+    return token_refused_ || now < stopped_until_;
+}
+
+void Worker::set_aside_locked(UploadJob &&job, SetAside &out) {
+    if (captured_before_revoke(job)) {
+        if (!job.sidecar_path.empty()) {
+            out.remove.push_back(job.sidecar_path);
+        }
+        return;
+    }
+    if (!kept_through_stop(job)) {
+        return;  // a stop is a hard stop: nothing else captured meanwhile is kept for later
+    }
+    if (!token_refused_ && parked_.size() < max_queue_size) {
+        parked_.push_back(std::move(job));  // sent once the spending-cap stop ends
+        return;
+    }
+    if (job.sidecar_path.empty()) {
+        out.persist.push_back(std::move(job));  // its file keeps it for a later launch
+    }
+}
+
+void Worker::set_aside_queue_locked(SetAside &out) {
+    for (auto it = queue_.begin(); it != queue_.end();) {
+        if (it->is_log_upload) {
+            ++it;  // an upload to a slot granted earlier is not refused by a stop
+            continue;
+        }
+        set_aside_locked(std::move(*it), out);
+        it = queue_.erase(it);
+    }
+}
+
+void Worker::resume_parked_locked(std::chrono::steady_clock::time_point now) {
+    if (parked_.empty() || sending_stopped_locked(now)) {
+        return;
+    }
+    for (UploadJob &job : parked_) {
+        job.not_before = now;
+        if (queue_.size() >= max_queue_size) {
+            queue_.pop_front();  // bounded as in enqueue(); a report's file outlives this
+        }
+        queue_.push_back(std::move(job));
+    }
+    parked_.clear();
+}
+
+void Worker::finish_set_aside(SetAside &work) {
+    for (const UploadJob &job : work.persist) {
+        sidecars_.write(job.kind, job.body);
+    }
+    for (const std::filesystem::path &path : work.remove) {
+        sidecars_.remove(path);
+    }
+    work.persist.clear();
+    work.remove.clear();
 }
 
 }  // namespace tombstone

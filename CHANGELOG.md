@@ -91,6 +91,17 @@ the `tombstone` library name are stable — Tombstack is the product name).
   or a full disk during the write no longer leaves a truncated report that the server refuses.
   A pending report or batch that no launch could deliver within 90 days is deleted unsent, so a
   report kept through refusals is not retried at every launch forever.
+- When a studio reaches the spending cap it set, the server refuses everything with 402 until a
+  time it names. The SDK deleted the crash or bug report that got this answer and kept sending
+  heartbeats, events and metrics into the refusal until the end of the period. It now sends
+  nothing until that time (checking again at least every hour, so raising the cap resumes a
+  running game within the hour), keeps crash and bug reports and sends them afterwards, and
+  drops the heartbeats, events and metrics captured during the stop, which the server would
+  not store.
+- A refused SDK token (401 `invalid_api_key`, or a 403) made the SDK delete every crash and
+  bug report it tried to send while it kept sending. It now stops sending for the rest of the
+  launch and keeps crash and bug reports on disk for the next one. A payload the server
+  refuses itself (400, 404, 413, 422) is still deleted.
 
 ## [0.9.4] - 2026-09-18
 

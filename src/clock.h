@@ -16,6 +16,10 @@ std::string format_iso8601_utc_ms(std::int64_t ms_since_epoch);
 /** Current wall-clock time in the wire format above. */
 std::string now_iso8601_utc_ms();
 
+/** Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm).
+ *  Pure; the caller validates the date. */
+std::int64_t days_from_civil(std::int64_t year, unsigned month, unsigned day) noexcept;
+
 }  // namespace tombstone
 
 #endif  // TOMBSTONE_SRC_CLOCK_H
